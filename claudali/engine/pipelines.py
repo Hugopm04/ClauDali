@@ -173,8 +173,34 @@ def _apply_memory_strategy(pipe: Any) -> list[str]:
     if SETTINGS.vae_tiling:
         # Tiling decodes the latent in chunks. Without it, the VAE decode of a
         # 1024px image is often the single largest VRAM spike in the run.
-        pipe.enable_vae_tiling()
-        pipe.enable_vae_slicing()
+        #
+        # These helpers moved from the pipeline onto the VAE itself (they are
+        # gone from the pipeline in diffusers 0.40), so try the current location
+        # first and fall back for older versions that requirements.txt allows.
+        notes.extend(_enable_vae_memory_savers(pipe))
+    return notes
+
+
+def _enable_vae_memory_savers(pipe: Any) -> list[str]:
+    """Turn on VAE tiling and slicing, whichever API this diffusers exposes."""
+    notes: list[str] = []
+    vae = getattr(pipe, "vae", None)
+
+    for vae_method, pipe_method in (
+        ("enable_tiling", "enable_vae_tiling"),
+        ("enable_slicing", "enable_vae_slicing"),
+    ):
+        target = getattr(vae, vae_method, None) or getattr(pipe, pipe_method, None)
+        if target is None:
+            notes.append(
+                f"could not enable VAE {vae_method.split('_')[1]}; decoding a 1024px "
+                "image may spike VRAM. Lower the resolution if you hit an OOM."
+            )
+            continue
+        try:
+            target()
+        except Exception as exc:  # noqa: BLE001 - a memory hint must not fail a render
+            notes.append(f"VAE {vae_method} failed ({type(exc).__name__}); continuing without it")
     return notes
 
 

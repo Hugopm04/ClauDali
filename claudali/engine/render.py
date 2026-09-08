@@ -199,6 +199,13 @@ def render(
     seeds = _seeds_for(spec)
     images: list[RenderedImage] = []
 
+    # img2img and inpainting start partway along the schedule, so they run
+    # `steps * strength` iterations rather than `steps`. Reporting the nominal
+    # count would leave progress stalled at ~55% and then jump straight to done.
+    effective_steps = compiled.steps
+    if task in {"img2img", "inpaint"} and spec.init is not None:
+        effective_steps = max(1, int(compiled.steps * spec.init.strength))
+
     for index, seed in enumerate(seeds):
         generator = torch.Generator(device="cpu").manual_seed(seed)
 
@@ -212,7 +219,7 @@ def render(
                 callback_kwargs: dict[str, Any],
                 _index: int = index,
             ) -> dict[str, Any]:
-                progress(step + 1, compiled.steps, _index, len(seeds))
+                progress(step + 1, effective_steps, _index, len(seeds))
                 return callback_kwargs
 
         output = pipe(
