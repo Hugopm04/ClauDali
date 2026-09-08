@@ -1,0 +1,110 @@
+# Lighting vocabulary.
+#
+# Lighting is the single strongest lever on mood, which is why it is a
+# first-class spec field rather than a style adjective. Keys describe a real
+# lighting setup wherever possible, because SDXL responds better to "rembrandt
+# lighting, triangle of light on the cheek" than to "dramatic".
+
+lighting:
+  golden_hour:
+    prompt: "golden hour sunlight, long warm raking shadows, amber rim on every edge"
+    weight: 1.1
+
+  blue_hour:
+    prompt: "blue hour twilight, deep cyan sky, cool ambient light, warm artificial accents"
+    weight: 1.1
+
+  overcast:
+    prompt: "soft overcast daylight, huge diffuse source, gentle wraparound shadows, low contrast"
+    weight: 1.05
+
+  harsh_noon:
+    prompt: "harsh midday sun, short hard shadows, blown highlights, high contrast"
+    weight: 1.05
+
+  rembrandt:
+    prompt: "rembrandt lighting, single key at 45 degrees, triangle of light on the shadowed cheek"
+    weight: 1.15
+
+  split_light:
+    prompt: "split lighting, hard side key, half the face in darkness, severe"
+    weight: 1.15
+
+  rim_light:
+    prompt: "strong rim light, bright separation edge, subject carved out of a dark ground"
+    weight: 1.15
+
+  backlit:
+    prompt: "backlit, subject against the source, glowing translucent edges, deep frontal shadow"
+    weight: 1.12
+
+  silhouette:
+    prompt: "silhouette, subject rendered as pure dark shape against a luminous background"
+    weight: 1.2
+    negative: "front lighting, visible facial detail"
+
+  studio_three_point:
+    prompt: "three point studio lighting, soft key, controlled fill, clean rim, seamless backdrop"
+    weight: 1.1
+
+  softbox:
+    prompt: "large softbox key, creamy gradient falloff, catchlight in the eyes, editorial"
+    weight: 1.1
+
+  hard_flash:
+    prompt: "direct on-camera flash, hard shadow behind the subject, blown foreground, snapshot"
+    weight: 1.12
+
+  chiaroscuro:
+    prompt: "chiaroscuro, extreme light against deep shadow, single dramatic source, caravaggio"
+    weight: 1.18
+
+  volumetric:
+    prompt: "volumetric light shafts, visible beams through haze, atmospheric scattering"
+    weight: 1.15
+
+  god_rays:
+    prompt: "crepuscular god rays breaking through cloud, radiant shafts, dust motes"
+    weight: 1.15
+
+  candlelight:
+    prompt: "candlelight, small warm flickering source, rapid falloff, orange skin, deep gloom"
+    weight: 1.15
+
+  firelight:
+    prompt: "firelight from below, dancing warm glow, upward shadows, ember sparks"
+    weight: 1.15
+
+  moonlight:
+    prompt: "moonlight, cold blue key, silver highlights, deep desaturated shadow"
+    weight: 1.12
+
+  neon:
+    prompt: "neon lighting, saturated magenta and cyan sources, wet reflective specular highlights"
+    weight: 1.15
+
+  bioluminescent:
+    prompt: "bioluminescent glow, soft cyan-green emissive light from within the subject, dark ground"
+    weight: 1.18
+
+  underwater_caustics:
+    prompt: "underwater caustics, rippling refracted light patterns, blue-green depth haze"
+    weight: 1.18
+
+  high_key:
+    prompt: "high key lighting, bright airy exposure, minimal shadow, white on white"
+    weight: 1.15
+    negative: "dark, moody, heavy shadow"
+
+  low_key:
+    prompt: "low key lighting, predominantly dark frame, small pools of light, moody"
+    weight: 1.15
+    negative: "bright, airy, flat lighting"
+
+  practical_glow:
+    prompt: "practical lights in frame, lamps and signage as visible sources, warm pools"
+    weight: 1.1
+
+  stormlight:
+    prompt: "storm light, bruised sky, one break of sun on the subject, dramatic weather"
+    weight: 1.15

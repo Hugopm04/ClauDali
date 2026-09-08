@@ -1,0 +1,138 @@
+# Camera vocabulary: shot size, lens, angle and focus.
+#
+# The compiler keeps whatever the caller asked for, but warns when lens or
+# aperture is combined with a non-optical medium (a woodcut has no f-stop).
+
+shot:
+  extreme_wide:
+    prompt: "extreme wide shot, subject small in a vast environment, establishing scale"
+    weight: 1.12
+  wide:
+    prompt: "wide shot, full environment visible around the subject"
+    weight: 1.1
+  full_body:
+    prompt: "full body shot, head to feet in frame"
+    weight: 1.12
+  medium:
+    prompt: "medium shot, subject from the waist up"
+    weight: 1.1
+  close_up:
+    prompt: "close-up, head and shoulders filling the frame"
+    weight: 1.12
+  extreme_close_up:
+    prompt: "extreme close-up, a single detail filling the entire frame"
+    weight: 1.15
+  macro:
+    prompt: "macro photography, life-size magnification, razor-thin plane of focus"
+    weight: 1.15
+  aerial:
+    prompt: "aerial view from high above, drone perspective, landscape spread below"
+    weight: 1.15
+  birds_eye:
+    prompt: "bird's eye view, looking straight down, flattened graphic composition"
+    weight: 1.18
+  worms_eye:
+    prompt: "worm's eye view, looking steeply up, towering converging verticals"
+    weight: 1.18
+  over_shoulder:
+    prompt: "over the shoulder framing, foreground figure out of focus"
+    weight: 1.1
+  establishing:
+    prompt: "establishing shot, the whole location legible at once"
+    weight: 1.1
+
+lens:
+  14mm:
+    prompt: "14mm ultra wide lens, exaggerated perspective, curved edges"
+    optical: true
+  24mm:
+    prompt: "24mm wide angle lens, expansive framing, mild distortion"
+    optical: true
+  35mm:
+    prompt: "35mm lens, natural reportage framing"
+    optical: true
+  50mm:
+    prompt: "50mm lens, human-eye perspective, no distortion"
+    optical: true
+  85mm:
+    prompt: "85mm portrait lens, flattering compression, creamy background separation"
+    optical: true
+  135mm:
+    prompt: "135mm telephoto, strong compression, isolated subject"
+    optical: true
+  200mm:
+    prompt: "200mm telephoto, heavily compressed planes, distant subject pulled close"
+    optical: true
+  fisheye:
+    prompt: "fisheye lens, 180 degree circular distortion"
+    optical: true
+  tilt_shift:
+    prompt: "tilt-shift lens, sliver of focus, miniature-model effect"
+    optical: true
+  anamorphic:
+    prompt: "anamorphic lens, oval bokeh, horizontal blue flare"
+    optical: true
+  macro_lens:
+    prompt: "macro lens, extreme magnification, paper-thin depth of field"
+    optical: true
+
+angle:
+  eye_level:
+    prompt: "eye level camera, neutral and direct"
+  low_angle:
+    prompt: "low camera angle looking up, subject made imposing"
+    weight: 1.12
+  high_angle:
+    prompt: "high camera angle looking down, subject made small"
+    weight: 1.12
+  dutch:
+    prompt: "dutch tilt, canted horizon, unease"
+    weight: 1.15
+  top_down:
+    prompt: "top-down orthographic view, flat lay"
+    weight: 1.15
+  profile:
+    prompt: "strict profile view, subject seen exactly from the side"
+    weight: 1.15
+
+focus:
+  shallow_dof:
+    prompt: "shallow depth of field, subject sharp against a dissolved background"
+    weight: 1.12
+    optical: true
+  bokeh:
+    prompt: "creamy circular bokeh, out-of-focus highlight orbs"
+    weight: 1.12
+    optical: true
+  deep_focus:
+    prompt: "deep focus, everything from foreground to horizon sharp"
+    weight: 1.12
+    optical: true
+  tack_sharp:
+    prompt: "tack sharp, crisp micro-detail, no motion blur"
+    weight: 1.1
+  soft_focus:
+    prompt: "soft focus, gentle diffusion, glowing highlights"
+    weight: 1.1
+    optical: true
+  motion_blur:
+    prompt: "motion blur, long exposure streaks, sense of speed"
+    weight: 1.15
+    optical: true
+
+# Framing rules from composition.rule. These are compositional instructions
+# rather than optics, so they always apply.
+rule:
+  thirds:
+    prompt: "rule of thirds composition, subject off-centre on a third line"
+  centered:
+    prompt: "centred symmetrical composition, subject dead centre"
+    weight: 1.1
+  golden_spiral:
+    prompt: "golden spiral composition, eye led in a curve to the subject"
+  symmetry:
+    prompt: "perfect bilateral symmetry, mirrored halves"
+    weight: 1.15
+  diagonal:
+    prompt: "strong diagonal composition, dynamic leading lines"
+    weight: 1.1

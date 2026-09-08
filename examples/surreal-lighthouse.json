@@ -1,0 +1,34 @@
+{
+  "name": "surreal lighthouse",
+  "intent": "painterly",
+  "notes": "Shows the procedural depth map: the layer stack fixes the composition, so the model decides the painting but not the placement.",
+  "subject": {
+    "primary": "a lighthouse built from stacked antique clocks",
+    "details": ["salt-worn brass", "one lit window", "gulls frozen mid-flight"],
+    "action": "casting a beam that bends upward into the clouds"
+  },
+  "scene": {
+    "setting": "a black basalt cliff above the north atlantic",
+    "time": "blue hour",
+    "weather": "a storm pulling away to the east"
+  },
+  "style": {
+    "medium": "oil_impasto",
+    "movement": "surrealism",
+    "detail": "high"
+  },
+  "lighting": { "key": "stormlight", "mood": "ominous but hopeful" },
+  "palette": { "name": "teal_amber", "contrast": "high" },
+  "composition": {
+    "aspect": "3:2",
+    "rule": "thirds",
+    "horizon": 0.62,
+    "layers": [
+      { "role": "far_ridge", "shape": "horizon", "bbox": [0.0, 0.52, 1.0, 0.64], "depth": 0.18 },
+      { "role": "lighthouse", "shape": "column", "bbox": [0.62, 0.14, 0.74, 0.66], "depth": 0.75 },
+      { "role": "cliff", "shape": "blob", "bbox": [0.0, 0.55, 0.55, 1.0], "depth": 0.92 }
+    ]
+  },
+  "control": { "mode": "depth", "source": "procedural", "strength": 0.55 },
+  "render": { "variations": 4, "seed": 1848 }
+}

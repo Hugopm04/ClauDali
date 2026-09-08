@@ -1,0 +1,169 @@
+# Medium vocabulary: the physical artefact the image pretends to be.
+#
+# Each key expands into a prompt fragment, an optional weight, and optional
+# implicit negatives that keep the medium honest (a watercolour should not come
+# back looking like an airbrushed 3D render).
+#
+# `weight` is applied as a compel-style multiplier. Above ~1.3 SDXL starts to
+# fry colours, so the table stays inside 0.9-1.25 unless there is a reason.
+
+media:
+  photograph:
+    prompt: "professional photograph, photographic, realistic detail, natural colour"
+    weight: 1.1
+    negative: "illustration, painting, drawing, cartoon, cgi, render"
+
+  film_35mm:
+    prompt: "35mm film photograph, kodak portra, fine film grain, halation, analog"
+    weight: 1.1
+    negative: "digital, oversharpened, clinical"
+
+  polaroid:
+    prompt: "polaroid instant photo, soft focus, milky highlights, faded emulsion, white border"
+    weight: 1.05
+    negative: "sharp, high resolution, digital clarity"
+
+  cinematic_still:
+    prompt: "cinematic film still, anamorphic, colour graded, shallow depth of field, movie frame"
+    weight: 1.1
+    negative: "snapshot, flash photography, amateur"
+
+  oil_impasto:
+    prompt: "oil painting, thick impasto brushwork, visible palette knife strokes, canvas weave"
+    weight: 1.15
+    negative: "smooth gradients, airbrushed, digital, photographic"
+
+  oil_classical:
+    prompt: "classical oil painting, glazed layers, subtle varnish sheen, museum canvas"
+    weight: 1.12
+    negative: "digital art, modern illustration, photographic"
+
+  watercolor:
+    prompt: "watercolour painting, wet-on-wet bleeds, granulating pigment, paper tooth, soft edges"
+    weight: 1.15
+    negative: "hard edges, digital, glossy, 3d render"
+
+  gouache:
+    prompt: "gouache painting, matte opaque pigment, flat washes, visible brush ends"
+    weight: 1.12
+    negative: "glossy, transparent, photographic"
+
+  ink_linework:
+    prompt: "pen and ink drawing, confident linework, cross-hatching, high contrast, white paper"
+    weight: 1.15
+    negative: "colour wash, soft shading, photographic, blurry"
+
+  charcoal:
+    prompt: "charcoal drawing, smudged tonal shading, grainy paper, deep blacks"
+    weight: 1.12
+    negative: "colour, clean lines, digital"
+
+  pastel:
+    prompt: "soft pastel drawing, chalky pigment, blended tones, textured paper"
+    weight: 1.1
+    negative: "sharp detail, digital, glossy"
+
+  acrylic:
+    prompt: "acrylic painting, bold saturated colour, crisp brush edges, matte finish"
+    weight: 1.1
+    negative: "photographic, transparent glazes"
+
+  digital_painting:
+    prompt: "digital painting, painterly brushwork, confident value structure, artstation quality"
+    weight: 1.1
+    negative: "photograph, 3d render, flat vector"
+
+  concept_art:
+    prompt: "production concept art, design sheet clarity, strong silhouette, cinematic staging"
+    weight: 1.1
+    negative: "snapshot, amateur, cluttered"
+
+  matte_painting:
+    prompt: "digital matte painting, vast scale, atmospheric perspective, film production quality"
+    weight: 1.1
+    negative: "close-up, portrait, flat lighting"
+
+  pixel_art:
+    prompt: "pixel art, crisp aligned pixels, limited palette, clean dithering, sprite art"
+    weight: 1.2
+    negative: "anti-aliasing, blur, gradient, photographic, smooth shading, 3d"
+
+  voxel:
+    prompt: "voxel art, cubic blocks, isometric construction, clean geometry, toy-like"
+    weight: 1.15
+    negative: "smooth curves, photographic, organic"
+
+  low_poly:
+    prompt: "low poly 3d, flat shaded triangles, faceted geometry, clean edges"
+    weight: 1.15
+    negative: "high detail, smooth subdivision, photographic"
+
+  render3d:
+    prompt: "octane render, physically based materials, ray traced global illumination, 3d"
+    weight: 1.1
+    negative: "painting, sketch, flat illustration"
+
+  clay_render:
+    prompt: "clay render, matte grey material, soft studio ambient occlusion, no textures"
+    weight: 1.15
+    negative: "colourful, textured, photographic"
+
+  cel_shaded:
+    prompt: "cel shaded illustration, flat colour zones, clean ink outline, anime production art"
+    weight: 1.15
+    negative: "gradient shading, photographic, painterly"
+
+  comic:
+    prompt: "comic book art, bold inked outlines, halftone dots, dynamic panel composition"
+    weight: 1.15
+    negative: "photographic, soft focus, muted"
+
+  woodcut:
+    prompt: "woodcut print, carved gouge marks, stark black and white, rough register"
+    weight: 1.2
+    negative: "colour, gradient, photographic, smooth"
+
+  engraving:
+    prompt: "copperplate engraving, fine parallel hatching, antique print, ink on rag paper"
+    weight: 1.18
+    negative: "colour, soft focus, photographic"
+
+  stained_glass:
+    prompt: "stained glass window, leaded came outlines, luminous saturated panes, backlit"
+    weight: 1.2
+    negative: "photographic, soft gradient, muted"
+
+  mosaic:
+    prompt: "mosaic, tessellated tesserae, grout lines, byzantine gold ground"
+    weight: 1.2
+    negative: "smooth, photographic, continuous tone"
+
+  blueprint:
+    prompt: "technical blueprint, white line drawing on cyan ground, orthographic, dimension marks"
+    weight: 1.2
+    negative: "colour, photographic, painterly, shading"
+
+  vector_flat:
+    prompt: "flat vector illustration, clean geometric shapes, solid fills, generous negative space"
+    weight: 1.18
+    negative: "texture, grain, photographic, gradient noise"
+
+  isometric:
+    prompt: "isometric illustration, 2:1 dimetric projection, clean parallel edges, tidy scene"
+    weight: 1.15
+    negative: "perspective distortion, photographic, chaotic"
+
+  airbrush:
+    prompt: "airbrush illustration, smooth gradients, glossy highlights, retro 1980s poster art"
+    weight: 1.1
+    negative: "rough texture, sketchy, photographic"
+
+  collage:
+    prompt: "paper collage, torn edges, layered cut-outs, mixed printed textures, visible seams"
+    weight: 1.18
+    negative: "seamless, photographic, smooth"
+
+  tapestry:
+    prompt: "woven tapestry, thread texture, muted dyed wool, medieval millefleur ground"
+    weight: 1.2
+    negative: "photographic, glossy, smooth"

@@ -1,0 +1,24 @@
+{
+  "name": "3d render scene",
+  "intent": "render3d",
+  "notes": "Layers drive a canny control map instead of depth, which pins the object outlines without dictating their volume.",
+  "subject": {
+    "primary": "a brushed aluminium desk lamp beside a glass of water",
+    "details": ["anodised finish", "visible caustics through the glass"]
+  },
+  "scene": { "setting": "an infinite seamless studio backdrop" },
+  "style": { "medium": "render3d", "detail": "high" },
+  "camera": { "shot": "medium", "lens": "50mm", "angle": "eye_level", "focus": "deep_focus" },
+  "lighting": { "key": "studio_three_point" },
+  "palette": { "name": "desaturated" },
+  "composition": {
+    "aspect": "16:9",
+    "rule": "thirds",
+    "layers": [
+      { "role": "lamp", "shape": "column", "bbox": [0.30, 0.18, 0.46, 0.82], "depth": 0.7 },
+      { "role": "glass", "shape": "ellipse", "bbox": [0.58, 0.52, 0.70, 0.84], "depth": 0.8 }
+    ]
+  },
+  "control": { "mode": "canny", "source": "procedural", "strength": 0.45, "end": 0.7 },
+  "render": { "variations": 2 }
+}

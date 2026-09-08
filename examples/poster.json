@@ -1,0 +1,43 @@
+{
+  "name": "festival poster",
+  "intent": "graphic",
+  "notes": "The model never draws the lettering. The gradient scrim and the two text overlays are composited afterwards with Pillow, so they are exact and legible.",
+  "subject": {
+    "primary": "an abstract mountain range built from overlapping paper cutouts",
+    "details": ["layered depth", "generous empty sky"]
+  },
+  "style": { "medium": "vector_flat", "movement": "bauhaus", "detail": "minimal" },
+  "lighting": { "key": "high_key" },
+  "palette": { "name": "ember", "contrast": "high" },
+  "composition": { "aspect": "2:3", "rule": "centered" },
+  "render": { "variations": 2 },
+  "overlays": [
+    {
+      "type": "gradient",
+      "color": "#0a0503",
+      "bbox": [0.0, 0.55, 1.0, 1.0],
+      "direction": "up",
+      "opacity": 0.9,
+      "xy": [0.0, 0.0]
+    },
+    {
+      "type": "text",
+      "text": "NORTH RIDGE",
+      "size": 96,
+      "color": "#ffd08a",
+      "xy": [0.5, 0.78],
+      "anchor": "c",
+      "align": "center"
+    },
+    {
+      "type": "text",
+      "text": "a festival of small mountains\n14—16 August · Sierra de Guadarrama",
+      "size": 34,
+      "color": "#f2f0ff",
+      "xy": [0.5, 0.9],
+      "anchor": "c",
+      "align": "center",
+      "line_spacing": 1.4
+    }
+  ]
+}

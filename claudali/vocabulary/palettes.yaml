@@ -1,0 +1,98 @@
+# Colour palettes.
+#
+# Each palette carries both a prompt fragment (to steer diffusion) and explicit
+# hex values (used by `post.palette_lock`, by the contact sheet, and by the
+# procedural control maps). The two must agree, or a palette-locked render will
+# fight the prompt that produced it.
+
+palettes:
+  teal_amber:
+    prompt: "teal and amber colour grade, cool shadows against warm highlights"
+    colors: ["#0b3d47", "#12707f", "#e0a458", "#f6e7cb", "#08161a"]
+
+  neon_noir:
+    prompt: "neon noir palette, magenta and cyan against near-black, wet specular colour"
+    colors: ["#0a0612", "#2d1b4e", "#ff2e88", "#00e5ff", "#f2f0ff"]
+
+  earth_tones:
+    prompt: "earth tone palette, ochre umber and olive, muted natural pigments"
+    colors: ["#3d2f22", "#7a5c3e", "#b08954", "#9aa07a", "#e8dcc4"]
+
+  monochrome:
+    prompt: "monochrome, pure greyscale, tonal range only"
+    colors: ["#000000", "#3a3a3a", "#767676", "#b4b4b4", "#ffffff"]
+
+  sepia:
+    prompt: "sepia toned, warm brown monochrome, aged print"
+    colors: ["#1c1208", "#4a3520", "#8a6a44", "#c9a878", "#f0e2cc"]
+
+  pastel:
+    prompt: "soft pastel palette, chalky desaturated pinks blues and mints"
+    colors: ["#f7d6e0", "#c9e4de", "#f2e8cf", "#c6def1", "#faedcb"]
+
+  ice_blue:
+    prompt: "cold palette, glacial blues and whites, frost and pale steel"
+    colors: ["#0c2233", "#1d4e6b", "#5b9bb5", "#a8d4e0", "#f2fbff"]
+
+  autumn:
+    prompt: "autumn palette, rust burnt orange and deep gold against damp brown"
+    colors: ["#2b1a12", "#7c3a12", "#c1651c", "#e0a42e", "#6b6b3a"]
+
+  jewel_tones:
+    prompt: "jewel tone palette, emerald sapphire and garnet, saturated and rich"
+    colors: ["#0f2a23", "#0d5c46", "#123a6b", "#7a1230", "#d4af37"]
+
+  desaturated:
+    prompt: "desaturated palette, muted low-chroma colour, restrained and grey-leaning"
+    colors: ["#2e2f33", "#55585e", "#83868c", "#a9a49c", "#d6d2cb"]
+
+  candy:
+    prompt: "bright candy palette, high chroma pinks yellows and turquoise, playful"
+    colors: ["#ff5d8f", "#ffd166", "#06d6a0", "#118ab2", "#fff3f8"]
+
+  forest:
+    prompt: "forest palette, deep greens moss and bark, dappled shade"
+    colors: ["#0f1c14", "#1f3d22", "#3f6b3a", "#7fa05a", "#d9d6a1"]
+
+  desert:
+    prompt: "desert palette, sand terracotta and pale sky, sun-bleached"
+    colors: ["#e6cfa8", "#c98d5f", "#8c4a2f", "#7fa8b5", "#f5efe2"]
+
+  cyber_magenta:
+    prompt: "cyber palette, electric magenta and acid green on charcoal"
+    colors: ["#101014", "#2a0e3a", "#ff00a0", "#9dff00", "#e8e8f0"]
+
+  high_contrast_bw:
+    prompt: "stark black and white, no midtones, graphic contrast"
+    colors: ["#000000", "#ffffff"]
+
+  gameboy:
+    prompt: "four-tone green monochrome palette, handheld lcd look"
+    colors: ["#0f380f", "#306230", "#8bac0f", "#9bbc0f"]
+
+  ember:
+    prompt: "ember palette, black ground with molten orange and red glow"
+    colors: ["#0a0503", "#3d1108", "#a32a0d", "#f2711c", "#ffd08a"]
+
+# Modifiers applied on top of any palette by `palette.contrast`.
+contrast:
+  low:
+    prompt: "low contrast, compressed tonal range, soft and hazy"
+  normal:
+    prompt: ""
+  high:
+    prompt: "high contrast, deep blacks and bright highlights, punchy"
+    weight: 1.1
+
+# Detail level from style.detail.
+detail:
+  minimal:
+    prompt: "minimal detail, simplified shapes, restrained"
+  moderate:
+    prompt: "moderate detail"
+  high:
+    prompt: "highly detailed, rich surface texture"
+    weight: 1.1
+  intricate:
+    prompt: "intricate detail, dense ornamental complexity, rewarding close inspection"
+    weight: 1.15

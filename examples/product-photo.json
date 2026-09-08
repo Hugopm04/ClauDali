@@ -1,0 +1,26 @@
+{
+  "name": "product photo",
+  "intent": "photoreal",
+  "notes": "The photoreal intent supplies the model, cfg and negatives; only the subject and light need stating.",
+  "subject": {
+    "primary": "a hand-thrown stoneware coffee cup",
+    "details": ["matte oatmeal glaze", "a single cobalt drip down one side", "steam rising"],
+    "count": 1
+  },
+  "scene": {
+    "setting": "a pale oak table",
+    "background": "a soft out-of-focus kitchen"
+  },
+  "style": { "medium": "photograph", "detail": "high" },
+  "camera": {
+    "shot": "close_up",
+    "lens": "85mm",
+    "aperture": "f/2.0",
+    "angle": "eye_level",
+    "focus": "shallow_dof"
+  },
+  "lighting": { "key": "softbox", "accents": ["a cool rim from a window on the left"] },
+  "palette": { "name": "earth_tones" },
+  "composition": { "aspect": "4:5", "rule": "thirds" },
+  "render": { "variations": 3 }
+}

@@ -1,0 +1,117 @@
+# Art movement vocabulary: the aesthetic tradition an image belongs to.
+#
+# Movements are additive on top of a medium. `oil_impasto` + `surrealism` is a
+# different instruction from `photograph` + `surrealism`, and both are valid.
+
+movements:
+  surrealism:
+    prompt: "surrealist, dreamlike impossible juxtaposition, uncanny scale, symbolic imagery"
+    weight: 1.15
+    negative: "mundane, literal, documentary"
+
+  magic_realism:
+    prompt: "magic realism, ordinary world with one impossible detail, calm matter-of-fact staging"
+    weight: 1.1
+
+  impressionism:
+    prompt: "impressionist, broken colour, visible directional strokes, luminous atmosphere"
+    weight: 1.15
+    negative: "hard edges, photographic detail"
+
+  post_impressionism:
+    prompt: "post-impressionist, bold non-naturalistic colour, rhythmic swirling strokes"
+    weight: 1.15
+
+  expressionism:
+    prompt: "expressionist, distorted emotional forms, aggressive colour, raw gestural marks"
+    weight: 1.15
+    negative: "calm, naturalistic, restrained"
+
+  baroque:
+    prompt: "baroque, dramatic diagonal composition, tenebrism, opulent drapery, theatrical"
+    weight: 1.12
+
+  romanticism:
+    prompt: "romanticist, sublime landscape, awe of nature, turbulent sky, small human figure"
+    weight: 1.12
+
+  symbolism:
+    prompt: "symbolist, allegorical figures, mystic pallor, ornamental melancholy"
+    weight: 1.12
+
+  art_nouveau:
+    prompt: "art nouveau, whiplash organic curves, botanical ornament, decorative border, mucha"
+    weight: 1.15
+
+  art_deco:
+    prompt: "art deco, symmetrical geometric ornament, stepped forms, gold and black, streamlined"
+    weight: 1.15
+
+  bauhaus:
+    prompt: "bauhaus, primary colours, pure geometric forms, functional grid, sans-serif rigour"
+    weight: 1.18
+    negative: "ornament, texture, clutter"
+
+  constructivism:
+    prompt: "russian constructivism, bold diagonal geometry, red black cream, propaganda poster"
+    weight: 1.18
+
+  ukiyo_e:
+    prompt: "ukiyo-e woodblock print, flat colour fields, confident contour, hokusai wave pattern"
+    weight: 1.18
+    negative: "western perspective, photographic shading"
+
+  cubism:
+    prompt: "cubist, fragmented simultaneous viewpoints, faceted planes, muted analytic palette"
+    weight: 1.2
+    negative: "single viewpoint, photographic"
+
+  dada:
+    prompt: "dada, absurd photomontage, irreverent juxtaposition, typographic fragments"
+    weight: 1.18
+
+  minimalism:
+    prompt: "minimalist, radical negative space, few elements, quiet precision"
+    weight: 1.15
+    negative: "busy, ornate, cluttered, detailed background"
+
+  brutalism:
+    prompt: "brutalist, raw board-marked concrete, monolithic mass, heavy shadow, austere"
+    weight: 1.15
+
+  gothic:
+    prompt: "gothic, soaring pointed arches, tracery, candle gloom, solemn verticality"
+    weight: 1.12
+
+  cyberpunk:
+    prompt: "cyberpunk, rain-slick neon streets, dense signage, chrome and grime, night city"
+    weight: 1.15
+
+  solarpunk:
+    prompt: "solarpunk, green rooftop gardens, warm sunlight, art nouveau technology, optimistic"
+    weight: 1.15
+
+  dieselpunk:
+    prompt: "dieselpunk, riveted steel, interwar machinery, soot and brass, industrial art deco"
+    weight: 1.15
+
+  vaporwave:
+    prompt: "vaporwave, magenta and cyan gradient, grid horizon, roman bust, retro glitch"
+    weight: 1.2
+
+  psychedelia:
+    prompt: "psychedelic, kaleidoscopic symmetry, vibrating complementary colour, liquid forms"
+    weight: 1.18
+
+  hyperrealism:
+    prompt: "hyperrealist, forensic surface detail, pore-level texture, uncanny clarity"
+    weight: 1.15
+    negative: "painterly, stylised, soft"
+
+  folk:
+    prompt: "folk art, naive flattened perspective, decorative repetition, hand-made warmth"
+    weight: 1.15
+
+  noir:
+    prompt: "film noir, venetian blind shadows, wet asphalt, cigarette haze, moral gloom"
+    weight: 1.15

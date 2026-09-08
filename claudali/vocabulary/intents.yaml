@@ -1,0 +1,82 @@
+# Intent presets.
+#
+# `intent` is the one field a caller must think about before anything else. It
+# picks sane defaults for everything else, so a minimal spec -- a subject and an
+# intent -- still produces a competent image rather than SDXL's grey average.
+#
+# Every value here is a *default*: an explicit field in the spec always wins.
+
+intents:
+  photoreal:
+    description: "Photographs of things that could exist: objects, people, places."
+    medium: photograph
+    model: juggernaut-xl
+    cfg: 5.5
+    steps: 32
+    sampler: dpmpp_2m_karras
+    quality: "sharp focus, natural skin texture, accurate proportions, believable materials"
+    negatives: [artifacts, anatomy, cgi, watermark, photo_flaws]
+    lighting: softbox
+    detail: high
+
+  painterly:
+    description: "Paintings, surrealism, illustration, anything that reads as made by hand."
+    medium: oil_impasto
+    model: dreamshaper-xl
+    cfg: 7.5
+    steps: 34
+    sampler: dpmpp_2m_karras
+    quality: "confident brushwork, strong value structure, expressive colour"
+    negatives: [artifacts, photographic, painting_flaws, watermark]
+    lighting: chiaroscuro
+    detail: high
+
+  game_asset:
+    description: "Sprites, tiles, textures, icons: images destined for a game engine."
+    medium: null
+    model: sdxl-base
+    cfg: 7.0
+    steps: 30
+    sampler: euler_a
+    quality: "clean readable silhouette, consistent style, asset sheet clarity"
+    negatives: [artifacts, text, clutter, watermark, duplicates]
+    lighting: studio_three_point
+    detail: moderate
+    composition_rule: centered
+    # Assets are usually wanted on a plain ground so they cut out cleanly.
+    scene_default: "plain neutral background, isolated subject, even lighting"
+
+  render3d:
+    description: "Rendered 3D scenes: materials, global illumination, product shots."
+    medium: render3d
+    model: sdxl-base
+    cfg: 6.5
+    steps: 32
+    sampler: dpmpp_2m_karras
+    quality: "physically based materials, accurate reflections, soft contact shadows"
+    negatives: [artifacts, render_flaws, watermark, cartoon]
+    lighting: studio_three_point
+    detail: high
+
+  graphic:
+    description: "Posters, covers, diagrams, UI: layout-led images finished with overlays."
+    medium: vector_flat
+    model: sdxl-base
+    cfg: 8.0
+    steps: 30
+    sampler: euler_a
+    quality: "clean composition, deliberate negative space, strong graphic hierarchy"
+    # `text` is always excluded here: the compositing layer draws real lettering,
+    # so any text the model invents is guaranteed to be wrong and in the way.
+    negatives: [artifacts, text, clutter, watermark, photographic]
+    lighting: high_key
+    detail: minimal
+    composition_rule: centered
+
+# Appended to every positive prompt regardless of intent. Deliberately tiny:
+# "masterpiece, best quality, 8k, trending on artstation" is a superstition that
+# costs tokens and flattens style. This says only what is always true.
+global_quality: "well composed"
+
+# Appended to every negative prompt unless `negative.disable_defaults` is set.
+global_negative: "lowres, blurry, distorted, malformed, worst quality"

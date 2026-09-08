@@ -1,0 +1,21 @@
+{
+  "name": "pixel sprite",
+  "intent": "game_asset",
+  "notes": "Diffusion cannot align to a pixel grid; post.pixelate and palette_lock do that exactly, afterwards.",
+  "subject": {
+    "primary": "a wandering alchemist with a lantern and an overstuffed backpack",
+    "details": ["deep green cloak", "brass lantern", "worn boots"]
+  },
+  "style": { "medium": "pixel_art", "detail": "minimal" },
+  "scene": { "background": "plain flat background" },
+  "camera": { "shot": "full_body", "angle": "eye_level" },
+  "lighting": { "key": "studio_three_point" },
+  "palette": {
+    "name": "gameboy",
+    "colors": ["#0f380f", "#306230", "#8bac0f", "#9bbc0f"]
+  },
+  "composition": { "aspect": "1:1", "rule": "centered" },
+  "render": { "variations": 6 },
+  "post": { "pixelate": 12, "palette_lock": true, "transparent_bg": true },
+  "negative": { "presets": ["artifacts", "text", "clutter"], "extra": ["anti-aliasing", "blur", "3d render"] }
+}

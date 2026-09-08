@@ -1,0 +1,16 @@
+{
+  "name": "mossy stone texture",
+  "intent": "game_asset",
+  "notes": "post.seamless makes the result tile edge to edge; a 1:1 aspect keeps it square for a texture atlas.",
+  "subject": {
+    "primary": "weathered granite cobblestones with moss in the joints",
+    "details": ["damp", "uneven wear", "fine lichen speckle"]
+  },
+  "style": { "medium": "photograph", "detail": "high" },
+  "camera": { "shot": "birds_eye", "angle": "top_down", "focus": "deep_focus" },
+  "lighting": { "key": "overcast" },
+  "composition": { "aspect": "1:1" },
+  "render": { "variations": 4, "steps": 34 },
+  "post": { "seamless": true, "sharpen": 0.4 },
+  "negative": { "extra": ["visible edges", "vignetting", "perspective distortion"] }
+}

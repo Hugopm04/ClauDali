@@ -1,0 +1,55 @@
+# Negative prompt presets.
+#
+# Kept short on purpose. Enormous negative prompts are cargo cult: past roughly
+# 40 tokens SDXL's negative conditioning mostly adds noise and eats the token
+# budget the positive prompt needs. Each preset here targets one specific,
+# observed failure mode.
+
+negatives:
+  artifacts:
+    prompt: "jpeg artifacts, compression noise, banding, moire, oversharpened halos"
+
+  lowres:
+    prompt: "low resolution, blurry, out of focus, pixelated, upscaling artifacts"
+
+  anatomy:
+    prompt: "deformed hands, extra fingers, fused fingers, extra limbs, malformed face, crossed eyes"
+
+  text:
+    prompt: "text, letters, words, watermark, signature, caption, logo, subtitles"
+
+  watermark:
+    prompt: "watermark, stock photo watermark, signature, copyright notice"
+
+  photo_flaws:
+    prompt: "overexposed, underexposed, harsh flash, chromatic aberration, lens dirt, tilted horizon"
+
+  painting_flaws:
+    prompt: "muddy colour, flat lighting, unfinished, sketchy underdrawing showing through"
+
+  render_flaws:
+    prompt: "clipping geometry, z-fighting, untextured, default grey material, aliased edges"
+
+  clutter:
+    prompt: "cluttered background, busy composition, distracting elements, visual noise"
+
+  amateur:
+    prompt: "amateur, poorly composed, awkward crop, cheap looking"
+
+  cgi:
+    prompt: "cgi, 3d render, video game screenshot, plastic skin, uncanny valley"
+
+  cartoon:
+    prompt: "cartoon, anime, illustration, drawing, painting"
+
+  photographic:
+    prompt: "photograph, photorealistic, dslr, camera"
+
+  smooth:
+    prompt: "smooth gradients, airbrushed, anti-aliased, soft blur"
+
+  frame:
+    prompt: "picture frame, border, matte, passepartout, torn edges"
+
+  duplicates:
+    prompt: "duplicate subject, cloned elements, repeated faces, mirrored artifacts"

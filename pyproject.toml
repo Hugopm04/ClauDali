@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claudali"
+version = "0.1.0"
+description = "Structured-prompt image generation for agents: a scene spec compiler over local SDXL."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Hugo Perez" }]
+keywords = ["stable-diffusion", "sdxl", "image-generation", "agents", "controlnet"]
+
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "python-multipart>=0.0.9",
+    "pillow>=10.0",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "requests>=2.31",
+    "diffusers>=0.29",
+    "transformers>=4.40",
+    "accelerate>=0.30",
+    "safetensors>=0.4",
+    "compel>=2.0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+claudali = "claudali.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["claudali*", "installer*"]
+
+[tool.setuptools.package-data]
+"claudali" = ["vocabulary/*.yaml", "web/*.html", "web/*.css", "web/*.js"]

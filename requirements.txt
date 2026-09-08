@@ -1,0 +1,18 @@
+# Runtime dependencies for ClauDali (excluding torch, which the installer
+# selects per-platform: CUDA wheels on NVIDIA, CPU wheels otherwise).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+python-multipart>=0.0.9
+pillow>=10.0
+numpy>=1.24,<2
+opencv-python-headless>=4.8
+scipy>=1.11
+pyyaml>=6.0
+rich>=13.7
+requests>=2.31
+diffusers>=0.29
+transformers>=4.40
+accelerate>=0.30
+safetensors>=0.4
+compel>=2.0.2

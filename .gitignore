@@ -1,0 +1,30 @@
+# ClauDali local state — never committed
+.venv/
+models/
+outputs/
+runs/
+*.safetensors
+*.ckpt
+*.bin
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Local config overrides
+claudali.local.toml
+.env
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Installer log
+install.log

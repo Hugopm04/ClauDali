@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClauDali</title>
+<style>
+  :root {
+    --bg: #101014; --panel: #17171d; --panel-2: #1e1e26; --line: #2a2a34;
+    --text: #e6e6ea; --muted: #8f8f9e; --accent: #e0a458; --accent-2: #4fb0c6;
+    --ok: #6fcf7f; --err: #e06c6c; --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  .chip {
+    font-size: 12px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 20px; padding: 3px 10px;
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.warn { border-color: var(--err); color: var(--err); }
+
+  main { display: grid; grid-template-columns: 400px 1fr; gap: 0; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  #form { padding: 16px; border-right: 1px solid var(--line); }
+  #results { padding: 16px; min-width: 0; }
+
+  fieldset { border: 1px solid var(--line); border-radius: var(--radius); margin: 0 0 12px; padding: 10px 12px 12px; }
+  legend { color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; padding: 0 5px; }
+  label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; text-transform: uppercase; letter-spacing: .5px; }
+  input, select, textarea, button {
+    width: 100%; background: var(--panel-2); color: var(--text); font: inherit;
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  }
+  textarea { resize: vertical; min-height: 54px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent-2); border-color: var(--accent-2); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #1a1206; border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.1); }
+  button.wide { grid-column: 1 / -1; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--accent-2); margin: 0 0 8px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #cfcfd8; }
+
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
+  .bar > div { height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); width: 0; transition: width .4s; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .shot { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .shot img { width: 100%; display: block; cursor: zoom-in; background: #0b0b0e; }
+  .shot .meta { padding: 6px 8px; font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+  .shot .meta b { color: var(--text); }
+
+  .warn-list { color: var(--accent); font-size: 12px; margin: 6px 0 0; padding-left: 18px; }
+  .err-list { color: var(--err); font-size: 12px; margin: 6px 0 0; padding-left: 18px; }
+  .muted { color: var(--muted); }
+  .hist { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12.5px; }
+  .hist:hover { color: var(--accent); }
+  .hist img { width: 46px; height: 46px; object-fit: cover; border-radius: 4px; background: #0b0b0e; }
+  dialog { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 0; max-width: 96vw; max-height: 96vh; }
+  dialog img { max-width: 94vw; max-height: 88vh; display: block; }
+  dialog::backdrop { background: rgba(0,0,0,.8); }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Clau<span>Dali</span></h1>
+  <div class="chip" id="chip-device">checking hardware…</div>
+  <div class="chip" id="chip-queue">queue idle</div>
+  <div class="chip" id="chip-models">models…</div>
+</header>
+
+<main>
+  <!-- ------------------------------------------------------------------ -->
+  <section id="form">
+    <fieldset>
+      <legend>Intent</legend>
+      <select id="intent"></select>
+      <div class="muted" id="intent-desc" style="font-size:11.5px;margin-top:6px"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Subject</legend>
+      <label>Primary</label>
+      <textarea id="subject" placeholder="a lighthouse on a black basalt cliff"></textarea>
+      <label>Details (comma separated)</label>
+      <input id="details" placeholder="salt-worn paint, one lit window">
+      <label>Action</label>
+      <input id="action" placeholder="beam sweeping across the water">
+    </fieldset>
+
+    <fieldset>
+      <legend>Scene</legend>
+      <label>Setting</label>
+      <input id="setting" placeholder="north atlantic coast">
+      <div class="row">
+        <div><label>Time</label><input id="time" placeholder="blue hour"></div>
+        <div><label>Weather</label><input id="weather" placeholder="storm approaching"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Style</legend>
+      <div class="row">
+        <div><label>Medium</label><select id="medium"></select></div>
+        <div><label>Movement</label><select id="movement"></select></div>
+      </div>
+      <label>Descriptors (comma separated)</label>
+      <input id="descriptors" placeholder="weathered, monumental">
+    </fieldset>
+
+    <fieldset>
+      <legend>Light &amp; colour</legend>
+      <div class="row">
+        <div><label>Lighting</label><select id="lighting"></select></div>
+        <div><label>Palette</label><select id="palette"></select></div>
+      </div>
+      <div class="row">
+        <div><label>Contrast</label><select id="contrast"></select></div>
+        <div><label>Detail</label><select id="detail"></select></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Camera</legend>
+      <div class="row">
+        <div><label>Shot</label><select id="shot"></select></div>
+        <div><label>Lens</label><select id="lens"></select></div>
+      </div>
+      <div class="row">
+        <div><label>Angle</label><select id="angle"></select></div>
+        <div><label>Focus</label><select id="focus"></select></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Composition</legend>
+      <div class="row">
+        <div><label>Aspect</label><select id="aspect"></select></div>
+        <div><label>Rule</label><select id="rule"></select></div>
+      </div>
+      <label>Horizon (blank = none, 0 top → 1 bottom)</label>
+      <input id="horizon" type="number" step="0.01" min="0" max="1" placeholder="0.62">
+      <label>Control mode</label>
+      <div class="row">
+        <select id="control-mode">
+          <option value="none">none</option>
+          <option value="depth">depth</option>
+          <option value="canny">canny</option>
+          <option value="scribble">scribble</option>
+        </select>
+        <input id="control-strength" type="number" step="0.05" min="0" max="2" value="0.6" title="ControlNet strength">
+      </div>
+      <details style="margin-top:8px">
+        <summary>Layers (JSON) — drives the procedural control map</summary>
+        <textarea id="layers" placeholder='[{"role":"subject","shape":"column","bbox":[0.6,0.2,0.75,0.7],"depth":0.8}]'></textarea>
+      </details>
+    </fieldset>
+
+    <fieldset>
+      <legend>Render</legend>
+      <label>Model</label>
+      <select id="model"></select>
+      <div class="row-3">
+        <div><label>Steps</label><input id="steps" type="number" min="1" max="150" placeholder="auto"></div>
+        <div><label>CFG</label><input id="cfg" type="number" step="0.5" min="0" max="30" placeholder="auto"></div>
+        <div><label>Variations</label><input id="variations" type="number" min="1" max="16" value="1"></div>
+      </div>
+      <div class="row">
+        <div><label>Sampler</label><select id="sampler"></select></div>
+        <div><label>Seed (blank = random)</label><input id="seed" type="number" min="0"></div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button id="btn-compile">Compile only</button>
+      <button id="btn-control">Preview control</button>
+      <button id="btn-render" class="primary wide">Render</button>
+      <button id="btn-example">Load example</button>
+      <button id="btn-json">Show JSON</button>
+    </div>
+
+    <details style="margin-top:12px">
+      <summary>Raw spec JSON (editable — overrides the form)</summary>
+      <textarea id="json-spec" style="min-height:220px;margin-top:8px"></textarea>
+      <button id="btn-apply-json" style="margin-top:6px">Use this JSON</button>
+    </details>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <section id="results">
+    <div class="card" id="card-status">
+      <h2>Status</h2>
+      <div id="status-text" class="muted">Idle. Describe a scene and press Render.</div>
+      <div class="bar"><div id="progress"></div></div>
+      <div id="status-detail" class="muted" style="font-size:12px"></div>
+      <button id="btn-cancel" class="hidden" style="margin-top:8px;width:auto;padding:4px 12px">Cancel job</button>
+    </div>
+
+    <div class="card hidden" id="card-prompt">
+      <h2>Compiled prompt</h2>
+      <pre id="prompt-text"></pre>
+      <h2 style="margin-top:10px">Negative</h2>
+      <pre id="negative-text" class="muted"></pre>
+      <ul class="warn-list hidden" id="prompt-warnings"></ul>
+    </div>
+
+    <div class="card hidden" id="card-images">
+      <h2>Result</h2>
+      <div class="grid" id="images"></div>
+      <ul class="warn-list hidden" id="render-notes"></ul>
+    </div>
+
+    <div class="card">
+      <h2>History</h2>
+      <div id="history" class="muted">nothing yet</div>
+    </div>
+  </section>
+</main>
+
+<dialog id="viewer"><img id="viewer-img" alt=""></dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fileURL = (p) => `/api/file?path=${encodeURIComponent(p)}`;
+let VOCAB = null, EXAMPLES = [], exampleIndex = 0, pollTimer = null, currentJob = null;
+
+/* ---------- helpers ---------------------------------------------------- */
+
+function fillSelect(el, keys, { blank = true, blankLabel = "—" } = {}) {
+  el.innerHTML = "";
+  if (blank) el.append(new Option(blankLabel, ""));
+  keys.forEach((k) => el.append(new Option(k.replace(/_/g, " "), k)));
+}
+
+function commaList(value) {
+  return (value || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function setStatus(text, detail = "", pct = null) {
+  $("status-text").textContent = text;
+  $("status-detail").textContent = detail;
+  if (pct !== null) $("progress").style.width = `${Math.round(pct * 100)}%`;
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  const type = res.headers.get("content-type") || "";
+  if (!type.includes("application/json")) {
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res;
+  }
+  const body = await res.json();
+  if (!res.ok) {
+    const err = body.error || body;
+    const detail = Array.isArray(err.detail)
+      ? err.detail.map((d) => `${d.field}: ${d.message}`).join("; ")
+      : err.detail || "";
+    throw new Error(`${err.message || err.detail || res.statusText}${detail ? " — " + detail : ""}`);
+  }
+  return body;
+}
+
+/* ---------- spec assembly --------------------------------------------- */
+
+function buildSpec() {
+  const value = (id) => $(id).value.trim();
+  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
+
+  const spec = {
+    intent: value("intent"),
+    subject: { primary: value("subject") || "an unnamed subject" },
+    scene: {}, style: {}, camera: {}, lighting: {}, palette: {},
+    composition: { aspect: value("aspect") || "1:1" },
+    control: { mode: value("control-mode"), strength: Number($("control-strength").value) },
+    render: { variations: Number($("variations").value || 1) },
+  };
+
+  const details = commaList(value("details"));
+  if (details.length) spec.subject.details = details;
+  if (value("action")) spec.subject.action = value("action");
+
+  for (const [id, key] of [["setting", "setting"], ["time", "time"], ["weather", "weather"]]) {
+    if (value(id)) spec.scene[key] = value(id);
+  }
+  if (value("medium")) spec.style.medium = value("medium");
+  if (value("movement")) spec.style.movement = value("movement");
+  if (value("detail")) spec.style.detail = value("detail");
+  const descriptors = commaList(value("descriptors"));
+  if (descriptors.length) spec.style.descriptors = descriptors;
+
+  for (const id of ["shot", "lens", "angle", "focus"]) if (value(id)) spec.camera[id] = value(id);
+  if (value("lighting")) spec.lighting.key = value("lighting");
+  if (value("palette")) spec.palette.name = value("palette");
+  if (value("contrast")) spec.palette.contrast = value("contrast");
+  if (value("rule")) spec.composition.rule = value("rule");
+  if (num("horizon") !== null) spec.composition.horizon = num("horizon");
+
+  const layersRaw = value("layers");
+  if (layersRaw) {
+    try { spec.composition.layers = JSON.parse(layersRaw); }
+    catch (e) { throw new Error("Layers JSON is invalid: " + e.message); }
+  }
+
+  if (value("model")) spec.render.model = value("model");
+  if (value("sampler")) spec.render.sampler = value("sampler");
+  if (num("steps") !== null) spec.render.steps = num("steps");
+  if (num("cfg") !== null) spec.render.cfg = num("cfg");
+  if (num("seed") !== null) spec.render.seed = num("seed");
+
+  return spec;
+}
+
+function applySpec(spec) {
+  const set = (id, v) => { $(id).value = v === undefined || v === null ? "" : v; };
+  set("intent", spec.intent || "photoreal");
+  set("subject", spec.subject?.primary);
+  set("details", (spec.subject?.details || []).join(", "));
+  set("action", spec.subject?.action);
+  set("setting", spec.scene?.setting);
+  set("time", spec.scene?.time);
+  set("weather", spec.scene?.weather);
+  set("medium", spec.style?.medium);
+  set("movement", spec.style?.movement);
+  set("detail", spec.style?.detail);
+  set("descriptors", (spec.style?.descriptors || []).join(", "));
+  ["shot", "lens", "angle", "focus"].forEach((k) => set(k, spec.camera?.[k]));
+  set("lighting", spec.lighting?.key);
+  set("palette", spec.palette?.name);
+  set("contrast", spec.palette?.contrast);
+  set("aspect", spec.composition?.aspect || "1:1");
+  set("rule", spec.composition?.rule);
+  set("horizon", spec.composition?.horizon);
+  set("layers", spec.composition?.layers ? JSON.stringify(spec.composition.layers, null, 1) : "");
+  set("control-mode", spec.control?.mode || "none");
+  set("control-strength", spec.control?.strength ?? 0.6);
+  set("model", spec.render?.model);
+  set("sampler", spec.render?.sampler);
+  set("steps", spec.render?.steps);
+  set("cfg", spec.render?.cfg);
+  set("seed", spec.render?.seed);
+  set("variations", spec.render?.variations ?? 1);
+  updateIntentHint();
+}
+
+/* ---------- rendering results ------------------------------------------ */
+
+function showCompiled(compiled) {
+  $("card-prompt").classList.remove("hidden");
+  $("prompt-text").textContent = compiled.prompt;
+  $("negative-text").textContent = compiled.negative_prompt || "(none)";
+  const warnings = compiled.warnings || [];
+  const list = $("prompt-warnings");
+  list.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
+  list.classList.toggle("hidden", warnings.length === 0);
+}
+
+function showBundle(bundle) {
+  $("card-images").classList.remove("hidden");
+  const grid = $("images");
+  grid.innerHTML = "";
+
+  if (bundle.contact_sheet && bundle.variations.length > 1) {
+    grid.insertAdjacentHTML("beforeend", `
+      <div class="shot" style="grid-column:1/-1">
+        <img src="${fileURL(bundle.contact_sheet)}" data-full="${bundle.contact_sheet}" alt="contact sheet">
+        <div class="meta"><b>contact sheet</b><span>${bundle.variations.length} variations · ${bundle.duration_s}s</span></div>
+      </div>`);
+  }
+
+  bundle.variations.forEach((v) => {
+    const d = v.diagnostics || {};
+    const exposure = d.exposure || {};
+    const flags = (d.flags || []);
+    grid.insertAdjacentHTML("beforeend", `
+      <div class="shot">
+        <img src="${fileURL(v.preview)}" data-full="${v.image}" alt="variation ${v.index + 1}">
+        <div class="meta"><b>#${v.index + 1}</b><span>seed ${v.seed}</span></div>
+        <div class="meta"><span>range ${exposure.dynamic_range ?? "?"} · sharp ${d.detail?.laplacian_variance ?? "?"}</span></div>
+        ${flags.length ? `<ul class="err-list">${flags.map((f) => `<li>${f}</li>`).join("")}</ul>` : ""}
+      </div>`);
+  });
+
+  const notes = bundle.notes || [];
+  const noteList = $("render-notes");
+  noteList.innerHTML = notes.map((n) => `<li>${n}</li>`).join("");
+  noteList.classList.toggle("hidden", notes.length === 0);
+}
+
+/* ---------- job polling ------------------------------------------------ */
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  $("btn-render").disabled = false;
+  $("btn-cancel").classList.add("hidden");
+}
+
+async function pollJob(id) {
+  try {
+    const job = await api(`/api/jobs/${id}`);
+    currentJob = job;
+    const eta = job.eta_s ? ` · ~${Math.round(job.eta_s)}s left` : "";
+    if (job.status === "running") {
+      setStatus(
+        `Rendering variation ${job.variation + 1}/${job.total_variations}`,
+        `step ${job.step}/${job.total_steps}${eta}`,
+        job.progress
+      );
+    } else if (job.status === "queued") {
+      setStatus("Queued…", "waiting for the worker", 0);
+    } else {
+      stopPolling();
+      if (job.status === "done") {
+        setStatus("Done", `${job.bundle.duration_s}s · ${job.bundle.directory}`, 1);
+        showCompiled(job.bundle.compiled);
+        showBundle(job.bundle);
+        loadHistory();
+      } else {
+        setStatus(job.status === "cancelled" ? "Cancelled" : "Failed", job.error || "", 0);
+      }
+    }
+  } catch (err) {
+    stopPolling();
+    setStatus("Lost contact with the job", err.message, 0);
+  }
+}
+
+/* ---------- actions ---------------------------------------------------- */
+
+$("btn-compile").onclick = async () => {
+  try {
+    const compiled = await api("/api/compile", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildSpec()),
+    });
+    showCompiled(compiled);
+    setStatus("Compiled", `${compiled.model} · ${compiled.width}×${compiled.height} · ${compiled.steps} steps · cfg ${compiled.cfg}`, 0);
+  } catch (err) { setStatus("Compile failed", err.message, 0); }
+};
+
+$("btn-control").onclick = async () => {
+  const spec = buildSpec();
+  if (spec.control.mode === "none") {
+    setStatus("Set a control mode first", "depth, canny or scribble", 0);
+    return;
+  }
+  try {
+    const res = await fetch("/api/control-preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const url = URL.createObjectURL(await res.blob());
+    $("viewer-img").src = url;
+    $("viewer").showModal();
+  } catch (err) { setStatus("Control preview failed", err.message, 0); }
+};
+
+$("btn-render").onclick = async () => {
+  try {
+    const spec = buildSpec();
+    const job = await api("/api/render", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(spec),
+    });
+    $("btn-render").disabled = true;
+    $("btn-cancel").classList.remove("hidden");
+    setStatus("Queued…", `job ${job.id.slice(0, 8)}`, 0);
+    currentJob = job;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => pollJob(job.id), 1200);
+    pollJob(job.id);
+  } catch (err) { setStatus("Could not queue the render", err.message, 0); }
+};
+
+$("btn-cancel").onclick = async () => {
+  if (!currentJob) return;
+  try { await api(`/api/jobs/${currentJob.id}`, { method: "DELETE" }); }
+  catch (err) { setStatus("Cancel failed", err.message); }
+};
+
+$("btn-example").onclick = () => {
+  if (!EXAMPLES.length) return;
+  const example = EXAMPLES[exampleIndex % EXAMPLES.length];
+  exampleIndex++;
+  applySpec(example.spec);
+  setStatus(`Loaded example: ${example.name}`, "", 0);
+};
+
+$("btn-json").onclick = () => {
+  $("json-spec").value = JSON.stringify(buildSpec(), null, 2);
+  $("json-spec").closest("details").open = true;
+};
+
+$("btn-apply-json").onclick = () => {
+  try { applySpec(JSON.parse($("json-spec").value)); setStatus("JSON applied to the form", "", 0); }
+  catch (err) { setStatus("That JSON is not valid", err.message, 0); }
+};
+
+document.addEventListener("click", (event) => {
+  const img = event.target.closest(".shot img");
+  if (!img) return;
+  $("viewer-img").src = fileURL(img.dataset.full);
+  $("viewer").showModal();
+});
+$("viewer").onclick = () => $("viewer").close();
+
+function updateIntentHint() {
+  const info = VOCAB?.intents?.[$("intent").value];
+  $("intent-desc").textContent = info
+    ? `${info.description} → ${info.model}, cfg ${info.cfg}, ${info.steps} steps`
+    : "";
+}
+$("intent").onchange = updateIntentHint;
+
+/* ---------- history ---------------------------------------------------- */
+
+async function loadHistory() {
+  try {
+    const { bundles } = await api("/api/history?limit=12");
+    const box = $("history");
+    if (!bundles.length) { box.textContent = "nothing yet"; return; }
+    box.innerHTML = bundles.map((b, i) => `
+      <div class="hist" data-index="${i}">
+        <img src="${fileURL(b.variations[0]?.preview || "")}" alt="">
+        <div>
+          <div><b>${b.spec.name || b.spec.subject.primary.slice(0, 48)}</b></div>
+          <div class="muted">${b.created_at} · ${b.variations.length} img · ${b.duration_s}s</div>
+        </div>
+      </div>`).join("");
+    box.querySelectorAll(".hist").forEach((el) => {
+      el.onclick = () => {
+        const bundle = bundles[Number(el.dataset.index)];
+        applySpec(bundle.spec);
+        showCompiled(bundle.compiled);
+        showBundle(bundle);
+        setStatus("Loaded from history", bundle.directory, 1);
+      };
+    });
+  } catch { /* history is optional */ }
+}
+
+/* ---------- boot ------------------------------------------------------- */
+
+async function boot() {
+  try {
+    VOCAB = await api("/api/vocabulary");
+    const keys = VOCAB.keys;
+    fillSelect($("medium"), keys.media || []);
+    fillSelect($("movement"), keys.movements || []);
+    fillSelect($("lighting"), keys.lighting || []);
+    fillSelect($("palette"), keys.palettes || []);
+    fillSelect($("contrast"), keys.contrast || []);
+    fillSelect($("detail"), keys.detail || []);
+    fillSelect($("shot"), keys.shot || []);
+    fillSelect($("lens"), keys.lens || []);
+    fillSelect($("angle"), keys.angle || []);
+    fillSelect($("focus"), keys.focus || []);
+    fillSelect($("rule"), keys.rule || []);
+    fillSelect($("sampler"), VOCAB.samplers, { blank: true, blankLabel: "auto" });
+    fillSelect($("aspect"), Object.keys(VOCAB.aspects), { blank: false });
+    fillSelect($("intent"), Object.keys(VOCAB.intents), { blank: false });
+    $("aspect").value = "1:1";
+    updateIntentHint();
+  } catch (err) {
+    setStatus("Could not load the vocabulary", err.message, 0);
+  }
+
+  try {
+    const health = await api("/api/health");
+    const d = health.device || {};
+    $("chip-device").innerHTML = d.cuda_available
+      ? `<b>${d.gpu}</b> · ${d.vram_gb} GB · ${d.offload} offload`
+      : `<b>CPU only</b> — renders will take many minutes`;
+    if (!d.cuda_available) $("chip-device").classList.add("warn");
+  } catch { $("chip-device").textContent = "server unreachable"; }
+
+  try {
+    const { models } = await api("/api/models");
+    const ready = models.filter((m) => m.installed && m.kind === "checkpoint");
+    fillSelect($("model"), ready.map((m) => m.id), { blank: true, blankLabel: "auto (by intent)" });
+    $("chip-models").innerHTML = `<b>${ready.length}</b> checkpoint${ready.length === 1 ? "" : "s"} ready`;
+    if (!ready.length) {
+      $("chip-models").classList.add("warn");
+      $("chip-models").innerHTML = "<b>no models installed</b> — run the installer";
+    }
+  } catch { $("chip-models").textContent = "models unknown"; }
+
+  try { EXAMPLES = (await api("/api/examples")).examples; } catch { EXAMPLES = []; }
+  loadHistory();
+  setInterval(async () => {
+    try {
+      const { stats } = await api("/api/jobs?limit=1");
+      $("chip-queue").textContent = stats.running
+        ? `rendering · ${stats.queued} queued`
+        : stats.queued ? `${stats.queued} queued` : "queue idle";
+    } catch { /* ignore */ }
+  }, 5000);
+}
+
+boot();
+</script>
+</body>
+</html>
