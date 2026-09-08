@@ -1,18 +1,34 @@
-# Runtime dependencies for ClauDali (excluding torch, which the installer
-# selects per-platform: CUDA wheels on NVIDIA, CPU wheels otherwise).
+# Runtime dependencies for ClauDali.
+#
+# PyTorch is deliberately absent: the installer selects a build per platform
+# (CUDA wheels on NVIDIA, CPU wheels otherwise) from the PyTorch index, which a
+# plain requirement line cannot express.
+
+# API and server
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
 python-multipart>=0.0.9
+
+# Imaging
 pillow>=10.0
-numpy>=1.24,<2
-opencv-python-headless>=4.8
-scipy>=1.11
+opencv-python-headless>=4.10
+# No upper bound on numpy: the torch and torchvision cu124 wheels are built
+# against numpy 2.x, and pinning <2 forces a downgrade that breaks their ABI.
+numpy>=1.24
+
+# Vocabulary tables
 pyyaml>=6.0
-rich>=13.7
-requests>=2.31
+
+# Diffusion stack. transformers, accelerate and safetensors have no direct
+# import in this codebase but are not optional: diffusers needs transformers for
+# SDXL's two CLIP text encoders, accelerate for enable_model_cpu_offload() --
+# which is what makes SDXL fit in 6 GB -- and safetensors for use_safetensors.
 diffusers>=0.29
 transformers>=4.40
 accelerate>=0.30
 safetensors>=0.4
+
+# Prompt attention weights. Without compel, "(phrase)1.15" reaches CLIP as
+# literal parentheses and the weight does nothing at all.
 compel>=2.0.2

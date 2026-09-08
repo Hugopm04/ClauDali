@@ -140,11 +140,13 @@ def create_venv(recreate: bool = False) -> Path:
     if VENV_DIR.exists() and recreate:
         spinner = Spinner("removing the previous environment")
         spinner.update(str(VENV_DIR))
+        spinner.start_ticking()
         shutil.rmtree(VENV_DIR, ignore_errors=True)
         spinner.finish("removed")
 
     spinner = Spinner("creating the virtual environment")
     spinner.update(str(VENV_DIR))
+    spinner.start_ticking()
     result = subprocess.run(
         [sys.executable, "-m", "venv", str(VENV_DIR)], capture_output=True, text=True
     )
@@ -168,6 +170,7 @@ def run_pip(python: Path, args: list[str], label: str) -> None:
     that then crashes the installer's own error reporting.
     """
     spinner = Spinner(label)
+    spinner.start_ticking()
 
     # `--disable-pip-version-check` is a general option and belongs before the
     # subcommand; `--progress-bar` belongs to `install` and is rejected outright
@@ -202,6 +205,8 @@ def run_pip(python: Path, args: list[str], label: str) -> None:
 
     process.wait()
     if process.returncode != 0:
+        # Stop the ticker first, or it redraws over the error output.
+        spinner.stop_ticking()
         sys.stdout.write("\n")
         print("\n".join(tail[-25:]))
         raise InstallError(f"{label} failed (pip exit code {process.returncode})")
@@ -260,6 +265,7 @@ def download_model(entry: ModelEntry) -> bool:
 
     spinner = Spinner(f"resolving {entry.id}")
     spinner.update(entry.repo)
+    spinner.start_ticking()
     files = resolve_remote_files(entry)
     total = sum(item.size for item in files)
     spinner.finish(f"{len(files)} files, {human_bytes(total)}")
@@ -310,8 +316,10 @@ def verify(python: Path) -> dict[str, object]:
     )
     spinner = Spinner("verifying the installed stack")
     spinner.update("importing torch and diffusers")
+    spinner.start_ticking()
     result = subprocess.run([str(python), "-c", probe], capture_output=True, text=True)
     if result.returncode != 0:
+        spinner.stop_ticking()
         sys.stdout.write("\n")
         print(result.stderr.strip()[-2000:])
         raise InstallError("the installed environment could not import its own dependencies")

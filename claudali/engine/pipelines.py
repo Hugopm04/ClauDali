@@ -106,6 +106,24 @@ def _build_scheduler(pipe: Any, sampler: str) -> list[str]:
     return notes
 
 
+def _variant_for(local_dir: Any) -> Optional[str]:
+    """Return ``"fp16"`` when the downloaded files are fp16 variants.
+
+    The installer keeps whichever variant a repo actually publishes, and repos
+    differ: SDXL base ships fp16 weights for every component, while
+    ``sdxl-vae-fp16-fix`` ships a single fp32 file (it is built to be *stable*
+    in fp16, not stored in it). Passing ``variant="fp16"`` when no such file
+    exists fails the load outright, so the variant is detected rather than
+    assumed.
+    """
+    from pathlib import Path
+
+    directory = Path(local_dir)
+    if not directory.is_dir():
+        return None
+    return "fp16" if any(directory.rglob("*.fp16.safetensors")) else None
+
+
 def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
     """Load the fp16-safe VAE when it is installed and enabled."""
     notes: list[str] = []
@@ -124,7 +142,10 @@ def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
     from diffusers import AutoencoderKL
 
     vae = AutoencoderKL.from_pretrained(
-        str(entry.local_dir), torch_dtype=torch_dtype, local_files_only=True
+        str(entry.local_dir),
+        torch_dtype=torch_dtype,
+        variant=_variant_for(entry.local_dir),
+        local_files_only=True,
     )
     return vae, notes
 
@@ -247,7 +268,7 @@ def load_pipeline(
             )
         else:
             pipe = StableDiffusionXLPipeline.from_pretrained(
-                str(path), variant="fp16", local_files_only=True, **common
+                str(path), variant=_variant_for(path), local_files_only=True, **common
             )
 
         if controlnet_id is not None:
@@ -260,7 +281,7 @@ def load_pipeline(
             controlnet = ControlNetModel.from_pretrained(
                 str(control_entry.local_dir),
                 torch_dtype=torch_dtype,
-                variant="fp16",
+                variant=_variant_for(control_entry.local_dir),
                 local_files_only=True,
             )
             pipe = StableDiffusionXLControlNetPipeline.from_pipe(pipe, controlnet=controlnet)

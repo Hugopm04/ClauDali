@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -160,6 +161,12 @@ class Spinner:
     Shows elapsed time and the most recent output line, so the user can see the
     stage is alive and what it is doing, without a bar pretending to know how
     far along it is.
+
+    It ticks on its own timer rather than only when new output arrives. That
+    matters: pip downloads a 2.5 GB PyTorch wheel while printing nothing at all,
+    and a spinner driven purely by output lines sits frozen for many minutes
+    during the single longest step of the install, which is indistinguishable
+    from a hang.
     """
 
     FRAMES = "|/-\\"
@@ -170,27 +177,52 @@ class Spinner:
         self.frame = 0
         self.detail = ""
         self._last_draw = 0.0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._ticker: Optional[threading.Thread] = None
+
+    def start_ticking(self, interval: float = 0.4) -> None:
+        """Redraw periodically until :meth:`finish` or :meth:`stop_ticking`."""
+        if self._ticker is not None:
+            return
+        self._stop.clear()
+
+        def run() -> None:
+            while not self._stop.wait(interval):
+                self.update()
+
+        self._ticker = threading.Thread(target=run, daemon=True, name="claudali-spinner")
+        self._ticker.start()
+
+    def stop_ticking(self) -> None:
+        self._stop.set()
+        if self._ticker is not None:
+            self._ticker.join(timeout=1.0)
+            self._ticker = None
 
     def update(self, detail: str = "") -> None:
-        if detail:
-            self.detail = detail.strip()
-        now = time.monotonic()
-        if now - self._last_draw < 0.12:
-            return
-        self._last_draw = now
-        self.frame = (self.frame + 1) % len(self.FRAMES)
+        with self._lock:
+            if detail:
+                self.detail = detail.strip()
+            now = time.monotonic()
+            if now - self._last_draw < 0.12:
+                return
+            self._last_draw = now
+            self.frame = (self.frame + 1) % len(self.FRAMES)
 
-        elapsed = human_time(now - self.started)
-        head = f"  {self.FRAMES[self.frame]} {self.label}  [{elapsed}]  "
-        detail = self.detail[: max(0, terminal_width() - len(head) - 2)]
-        sys.stdout.write("\r" + (head + detail).ljust(terminal_width() - 1))
-        sys.stdout.flush()
+            elapsed = human_time(now - self.started)
+            head = f"  {self.FRAMES[self.frame]} {self.label}  [{elapsed}]  "
+            detail_text = self.detail[: max(0, terminal_width() - len(head) - 2)]
+            sys.stdout.write("\r" + (head + detail_text).ljust(terminal_width() - 1))
+            sys.stdout.flush()
 
     def finish(self, note: str = "done") -> None:
-        elapsed = human_time(time.monotonic() - self.started)
-        line = f"  + {self.label}  [{elapsed}]  {note}"
-        sys.stdout.write("\r" + line.ljust(terminal_width() - 1) + "\n")
-        sys.stdout.flush()
+        self.stop_ticking()
+        with self._lock:
+            elapsed = human_time(time.monotonic() - self.started)
+            line = f"  + {self.label}  [{elapsed}]  {note}"
+            sys.stdout.write("\r" + line.ljust(terminal_width() - 1) + "\n")
+            sys.stdout.flush()
 
 
 class Steps:
