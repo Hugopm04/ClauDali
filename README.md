@@ -331,6 +331,22 @@ it has no concept of a glyph. Use `overlays` for anything that must be legible.
 
 ---
 
+## Development
+
+```bash
+.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pytest -q
+```
+
+The test suite needs no GPU, no model weights and no network: it covers the spec
+contract, the prompt compiler, the procedural control maps, compositing,
+postprocessing and diagnostics. Regenerate the vocabulary reference after
+editing any table under `claudali/vocabulary/`:
+
+```bash
+python scripts/gen_vocab_docs.py
+```
+
 ## Documentation
 
 - [docs/scene-spec.md](docs/scene-spec.md) — every field, with examples

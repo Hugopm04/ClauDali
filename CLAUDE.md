@@ -143,30 +143,29 @@ a diffusers scheduler class name and its kwargs.
 
 ## Testing without a GPU
 
-Most of the system is testable with no model weights and no CUDA. The system
-Python already has numpy, Pillow, OpenCV, pydantic and FastAPI.
+Everything up to the sampler is deterministic and needs no weights, no CUDA and
+no network. `tests/test_claudali.py` covers the spec contract, the compiler,
+control maps, compositing, postprocessing and diagnostics — 34 tests, ~1.5 s.
 
 ```bash
-# compiler
+.venv\Scripts\python -m pytest -q            # or: pip install pytest
+```
+
+Several tests are regression locks on bugs that actually happened: an explicit
+`steps: 30` being overwritten by the intent default, `horizon` being inverted,
+and the gradient `direction` being backwards. Do not delete them to make a
+change pass.
+
+For anything visual, **write the image out and look at it** rather than
+trusting an assertion about pixel statistics:
+
+```bash
 python -c "
-import json,glob
+import json
 from claudali.spec import load_spec
-from claudali.compiler import compile_spec
-for f in sorted(glob.glob('examples/*.json')):
-    c = compile_spec(load_spec(json.load(open(f, encoding='utf-8'))))
-    print(f, c.model, c.width, c.height, len(c.warnings))"
-
-# control maps -- write them out and LOOK at them, do not trust the numbers
-python -c "
-from claudali.spec import load_spec; from claudali.control.maps import build_depth_map
-import json; s=load_spec(json.load(open('examples/surreal-lighthouse.json',encoding='utf-8')))
-build_depth_map(s).save('depth.png')"
-
-# API (needs python-multipart + httpx; install to a temp --target dir, not globally)
-python -c "
-from fastapi.testclient import TestClient
-from claudali.api import app
-with TestClient(app) as c: print(c.get('/api/health').json())"
+from claudali.control.maps import build_depth_map
+spec = load_spec(json.load(open('examples/surreal-lighthouse.json', encoding='utf-8')))
+build_depth_map(spec).save('depth.png')"
 ```
 
 `installer status`, `installer models --list` and `installer uninstall --dry-run`
