@@ -17,12 +17,14 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from claudali.compiler import compile_spec, load_vocabulary
+from claudali.compiler import _assemble, compile_spec, load_vocabulary
 from claudali.compose import apply_overlays, apply_postprocess, quantize_to_palette
 from claudali.control.maps import build_depth_map, build_edge_map, build_region_masks
 from claudali.diagnostics import analyse
-from claudali.engine.pipelines import _should_upcast_vae
+from claudali.engine.pipelines import _plan_cudnn, _should_upcast_vae
+from claudali.engine.regional import grid_for
 from claudali.spec import ASPECT_BUCKETS, Overlay, Postprocess, SceneSpec, load_spec
+from claudali.tokens import CHUNK_CONTENT_TOKENS, count_content_tokens, estimate_tokens, pack
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = sorted((ROOT / "examples").glob("*.json"))
@@ -133,6 +135,15 @@ def test_horizon_low_in_frame_means_sky_dominant():
     high = compile_spec(minimal(composition={"horizon": 0.2}))
     assert "sky dominant" in low.prompt
     assert "ground dominant" in high.prompt
+
+
+def test_layers_without_control_are_not_dropped_silently():
+    """Layers only reach the render through a ControlNet map; saying so is the rule."""
+    layers = {"composition": {"layers": [{"role": "tree", "bbox": [0.1, 0.1, 0.4, 0.9]}]}}
+    quiet = compile_spec(minimal(control={"mode": "depth"}, **layers))
+    loud = compile_spec(minimal(control={"mode": "none"}, **layers))
+    assert not any("composition.layers" in warning for warning in quiet.warnings)
+    assert any("composition.layers" in warning for warning in loud.warnings)
 
 
 def test_negatives_are_not_absurdly_long():
@@ -334,3 +345,308 @@ def test_vae_upcast_is_pointless_outside_fp16():
 
     assert _should_upcast_vae("auto", is_fp16=False, probe=probe) is False
     assert _should_upcast_vae("always", is_fp16=False, probe=probe) is False
+
+
+def _cudnn_plan(mode, results):
+    """Drive _plan_cudnn with a scripted sequence of measurements."""
+    measurements = iter(results)
+    switches = []
+    status = _plan_cudnn(mode, lambda: next(measurements), switches.append)
+    return status, switches
+
+
+def test_cudnn_is_left_alone_on_a_sound_machine():
+    status, switches = _cudnn_plan("auto", [False])
+    assert (status.broken, status.disabled, status.survives_workaround) == (False, False, False)
+    assert switches == []
+
+
+def test_cudnn_is_disabled_when_it_returns_nans():
+    """A regression lock: a GTX 1660 Ti renders solid black at 1344x768 without this."""
+    status, switches = _cudnn_plan("auto", [True, False])
+    assert (status.broken, status.disabled, status.survives_workaround) == (True, True, False)
+    assert switches == [False]
+    assert any("cuDNN is disabled for this process" in note for note in status.notes)
+
+
+def test_cudnn_is_restored_when_disabling_it_does_not_help():
+    """Paying for a fallback that fixes nothing would be worse than saying so."""
+    status, switches = _cudnn_plan("auto", [True, True])
+    assert (status.broken, status.disabled, status.survives_workaround) == (True, False, True)
+    assert switches == [False, True]
+
+
+def test_cudnn_off_skips_the_measurement():
+    def measure():
+        raise AssertionError("the mode has already decided")
+
+    status = _plan_cudnn("off", measure, lambda flag: None)
+    assert status.disabled is True
+
+
+def test_cudnn_on_reports_the_fault_it_was_told_to_keep():
+    status, switches = _cudnn_plan("on", [True])
+    assert (status.broken, status.disabled, status.survives_workaround) == (True, False, True)
+    assert switches == []
+
+
+def test_vae_upcast_covers_what_the_cudnn_workaround_could_not():
+    """The fp32 decode is the second line of defence, not the first.
+
+    Once cuDNN is off the fault is gone, so paying for an fp32 decode as well
+    would be cost with no benefit; if it survives, the decode is all that is left.
+    """
+    cleared, _ = _cudnn_plan("auto", [True, False])
+    survived, _ = _cudnn_plan("auto", [True, True])
+    assert _should_upcast_vae("auto", True, lambda: cleared.survives_workaround) is False
+    assert _should_upcast_vae("auto", True, lambda: survived.survives_workaround) is True
+
+
+# ---------------------------------------------------------------------------
+# CLIP chunking and the subject anchor
+#
+# All of these are regression locks on one measured failure. A spec asking for
+# "an ancient forest with multiple small ethereal fairies" compiled to 306
+# tokens; the word "fairies" appeared only at tokens 46, 58 and 73, so four of
+# the five chunks CLIP read described a forest with nothing in it, and all four
+# rendered images were empty forests.
+# ---------------------------------------------------------------------------
+
+
+def fairy_spec(**overrides) -> SceneSpec:
+    """The spec that exposed the chunk-dilution bug, trimmed to essentials."""
+    data = {
+        "subject": {
+            "primary": "an ancient forest with multiple small ethereal fairies",
+            "anchor": "small ethereal fairies",
+            "details": [
+                "glowing gossamer wings",
+                "naturalistic human forms",
+                "bioluminescent fungi on the bark",
+                "sparkling pixie dust trails",
+            ],
+            "action": "hovering around glowing flowers among mossy old-growth trees",
+        },
+        "scene": {
+            "setting": "deep in a temperate rainforest, dense undergrowth",
+            "time": "golden hour",
+            "weather": "humid, with drifting mist",
+        },
+        "style": {
+            "medium": "cinematic_still",
+            "movement": "magic_realism",
+            "descriptors": ["ethereal", "hyper-detailed", "atmospheric", "enchanted"],
+            "detail": "intricate",
+        },
+        "camera": {"shot": "scene", "lens": "50mm", "angle": "eye_level"},
+        "lighting": {"key": "god_rays"},
+        "palette": {"name": "forest", "contrast": "high"},
+        "composition": {"aspect": "16:9", "rule": "thirds"},
+    }
+    data.update(overrides)
+    return load_spec(data)
+
+
+def test_the_subject_appears_in_every_clip_chunk():
+    """The bug, locked. No stretch of the prompt may run a whole chunk without it.
+
+    Checked as gaps between mentions rather than by slicing at chunk offsets,
+    because compel's window boundaries are not ours. A gap no larger than one
+    chunk is what guarantees every window contains a mention, wherever it starts.
+    """
+    compiled = compile_spec(fairy_spec())
+    assert compiled.tokens is not None
+    assert compiled.tokens.chunks >= 3, "the fixture must be long enough to chunk"
+    gaps = compiled.prompt.lower().split("small ethereal fairies")
+    assert len(gaps) > 2, "the anchor was not restated at all"
+    for gap in gaps:
+        assert count_content_tokens(gap)[0] <= CHUNK_CONTENT_TOKENS, gap[:80]
+
+
+def test_a_short_prompt_is_left_alone():
+    """Anchoring a single-chunk prompt would repeat the subject for nothing.
+
+    Tested on the assembler rather than on a spec, because the shortest real
+    photoreal prompt lands within a token or two of the chunk boundary and a
+    fixture pinned there would flip on any vocabulary edit.
+    """
+    prompt, anchors, warnings = _assemble(["a red fox", "in deep snow", "soft light"], "a red fox")
+    assert anchors == []
+    assert warnings == []
+    assert prompt == "a red fox, in deep snow, soft light"
+
+
+def test_the_explicit_anchor_is_preferred_to_the_subject_line():
+    """`subject.primary` restated per chunk reinforces the setting along with it."""
+    explicit = compile_spec(fairy_spec())
+    inferred = compile_spec(
+        fairy_spec(
+            subject={
+                "primary": "an ancient forest with multiple small ethereal fairies",
+                "details": ["glowing gossamer wings"],
+            }
+        )
+    )
+    assert explicit.anchors and set(explicit.anchors) == {"small ethereal fairies"}
+    assert "ancient forest" not in " ".join(explicit.anchors)
+    assert any("subject.anchor" in warning for warning in inferred.warnings)
+
+
+def test_a_short_subject_line_needs_no_anchor_advice():
+    """Repeating three tokens per chunk is free, so saying so would be noise."""
+    compiled = compile_spec(
+        minimal(
+            subject={"primary": "a red fox"},
+            style={"descriptors": ["misty", "backlit", "painterly", "soft", "windswept"]},
+        )
+    )
+    assert not any("subject.anchor" in warning for warning in compiled.warnings)
+
+
+def test_the_token_count_says_whether_it_was_measured():
+    """A number that is sometimes exact and sometimes guessed must say which."""
+    compiled = compile_spec(fairy_spec())
+    assert compiled.tokens.source in {"clip-tokenizer", "estimate"}
+    assert compiled.tokens.exact == (compiled.tokens.source == "clip-tokenizer")
+    assert compiled.tokens.chunks == -(-compiled.tokens.tokens // CHUNK_CONTENT_TOKENS)
+
+
+def test_the_estimator_tracks_the_real_tokenizer():
+    """Regression: words times 1.3 read 212 for a 304-token prompt, so the guard never fired.
+
+    The reference numbers were measured with CLIP's own tokenizer. The estimator
+    is fitted, so drift is a regression rather than a tuning preference.
+    """
+    cases = [
+        (
+            "(cinematic film still, anamorphic, colour graded, shallow depth of field, "
+            "movie frame)1.10, (magic realism, ordinary world with one impossible detail)1.10",
+            38,
+        ),
+        ("jpeg artifacts, compression noise, banding, moire, oversharpened halos", 15),
+        ("a hand-thrown stoneware coffee cup", 8),
+    ]
+    for text, measured in cases:
+        estimate = estimate_tokens(text)
+        assert abs(estimate - measured) <= max(2, measured * 0.15), (text[:40], estimate, measured)
+
+
+def test_packing_never_exceeds_one_chunk():
+    """The invariant the whole guarantee rests on."""
+    pieces = [f"fragment number {index} with some filler words in it" for index in range(40)]
+    for group in pack(pieces, anchor="small ethereal fairies"):
+        assert count_content_tokens(", ".join(group))[0] <= CHUNK_CONTENT_TOKENS
+
+
+# ---------------------------------------------------------------------------
+# Layer prompts, framing, and the negatives that suppressed the subject
+# ---------------------------------------------------------------------------
+
+
+def test_layer_prompts_are_no_longer_read_by_nothing():
+    """`composition.layers[].prompt` used to vanish with no warning at all."""
+    compiled = compile_spec(
+        minimal(
+            composition={
+                "layers": [
+                    {
+                        "role": "fairies",
+                        "shape": "blob",
+                        "bbox": [0.05, 0.1, 0.3, 0.5],
+                        "prompt": "three tiny winged fairies",
+                        "depth": 0.8,
+                    }
+                ]
+            }
+        )
+    )
+    assert "three tiny winged fairies" in compiled.prompt
+    assert "in the left third" in compiled.prompt
+    assert "in the foreground" in compiled.prompt
+
+
+def test_regional_takes_the_layer_prompts_instead_of_the_text():
+    """With masking on, the same text must not also be added globally."""
+    compiled = compile_spec(
+        minimal(
+            composition={
+                "regional": {"enabled": True},
+                "layers": [
+                    {
+                        "role": "fairies",
+                        "bbox": [0.05, 0.1, 0.3, 0.5],
+                        "prompt": "three tiny winged fairies",
+                    }
+                ],
+            }
+        )
+    )
+    assert "three tiny winged fairies" not in compiled.prompt
+    assert [region["prompt"] for region in compiled.regions] == ["three tiny winged fairies"]
+    assert any("composition.regional" in note for note in compiled.notes)
+
+
+def test_a_body_crop_warns_when_there_is_no_body():
+    """Regression: `medium` on a forest read as a macro shot of undergrowth."""
+    compiled = compile_spec(
+        minimal(subject={"primary": "an ancient mossy forest"}, camera={"shot": "medium"})
+    )
+    assert any("crops a human body" in warning for warning in compiled.warnings)
+
+
+def test_an_occupation_still_counts_as_a_person():
+    """Regression: the first word list called `full_body` on an alchemist a mistake."""
+    for subject in ("a wandering alchemist with a lantern", "a blacksmith at the anvil"):
+        compiled = compile_spec(
+            minimal(subject={"primary": subject}, camera={"shot": "full_body"})
+        )
+        assert not any("crops a human body" in w for w in compiled.warnings), subject
+
+
+def test_one_body_framing_warns_when_several_were_asked_for():
+    compiled = compile_spec(
+        minimal(subject={"primary": "multiple small ethereal fairies"}, camera={"shot": "medium"})
+    )
+    assert any("frames one body" in warning for warning in compiled.warnings)
+
+
+def test_photoreal_no_longer_bans_the_rendered_look():
+    """Regression: "cgi, 3d render" in the negatives deleted the fairies.
+
+    SDXL's idea of a photorealistic fairy lives in illustrative and rendered
+    space. Pushing that space away removes the subject and leaves the setting,
+    which is exactly what four empty forests looked like. The plastic-skin half
+    of the preset is still wanted, and is still there.
+    """
+    compiled = compile_spec(minimal(subject={"primary": "a small ethereal fairy"}))
+    assert "3d render" not in compiled.negative_prompt
+    assert "video game screenshot" not in compiled.negative_prompt
+    assert "plastic skin" in compiled.negative_prompt
+
+
+def test_anatomy_negatives_follow_whether_there_is_anatomy():
+    """Kept for a fairy, which has hands; dropped for a cup, which does not."""
+    fairy = compile_spec(minimal(subject={"primary": "a small ethereal fairy"}))
+    cup = compile_spec(minimal(subject={"primary": "a stoneware coffee cup"}))
+    assert "extra fingers" in fairy.negative_prompt
+    assert "extra fingers" not in cup.negative_prompt
+    assert any("anatomy" in note for note in cup.notes)
+
+
+def test_an_explicit_anatomy_preset_beats_the_inference():
+    """Explicit beats inferred: a preset the caller named is theirs to keep."""
+    compiled = compile_spec(
+        minimal(subject={"primary": "a stoneware coffee cup"}, negative={"presets": ["anatomy"]})
+    )
+    assert "extra fingers" in compiled.negative_prompt
+
+
+def test_region_grids_recover_the_latent_shape():
+    """Masks are resized per attention block, so a wrong grid scrambles them."""
+    assert grid_for(96 * 168, 1344, 768) == (96, 168)
+    assert grid_for(48 * 84, 1344, 768) == (48, 84)
+    assert grid_for(24 * 42, 1344, 768) == (24, 42)
+    assert grid_for(1024, 1024, 1024) == (32, 32)
+    # An unrecognisable length must be declined, not guessed: that block is then
+    # left unmasked, which is weaker rather than wrong.
+    assert grid_for(4095, 1344, 768) is None

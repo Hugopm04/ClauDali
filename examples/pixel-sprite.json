@@ -4,6 +4,7 @@
   "notes": "Diffusion cannot align to a pixel grid; post.pixelate and palette_lock do that exactly, afterwards.",
   "subject": {
     "primary": "a wandering alchemist with a lantern and an overstuffed backpack",
+    "anchor": "a wandering alchemist",
     "details": ["deep green cloak", "brass lantern", "worn boots"]
   },
   "style": { "medium": "pixel_art", "detail": "minimal" },

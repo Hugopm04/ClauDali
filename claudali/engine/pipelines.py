@@ -8,12 +8,14 @@ Everything awkward about running SDXL on a 6 GB consumer card lives here:
 * **The GTX 16-series VAE bug.** Turing GTX cards produce NaNs in the stock fp16
   VAE, and every image decodes to solid black. ClauDali swaps in the fp16-fix
   VAE by default, which is the standard remedy.
-* **The cuDNN narrowing-convolution fault.** On some driver and cuDNN builds a
-  fp16 3x3 convolution whose output is narrower than its input returns NaNs for
-  a quarter of its values. The VAE decoder ends in exactly such a convolution,
-  so this also turns every image black -- and the fp16-fix VAE makes it *more*
-  likely, because that VAE declares it does not need upcasting. The card is
-  measured once and the VAE decodes in fp32 when it is affected.
+* **The cuDNN fp16 convolution fault.** On some driver and cuDNN builds an fp16
+  convolution returns NaNs for a quarter of its values, from finite inputs and
+  finite weights, turning every image solid black. Which shapes are hit is not
+  predictable -- it depends on the batch, the channel counts *and* the spatial
+  size together -- so the remedy is to stop using cuDNN for the whole process
+  rather than to work around one shape. The card is measured once; if it fails,
+  cuDNN is disabled and the measurement repeated to confirm the fallback is
+  sound. An fp32 VAE decode remains as a second line of defence.
 * **One resident pipeline.** Loading SDXL from disk costs 30-60 s. Pipelines for
   other tasks are derived with ``from_pipe``, which reuses the weights already
   in memory instead of reading them again.
@@ -96,25 +98,49 @@ def device_report() -> dict[str, Any]:
         # fp16 VAE fix. Reporting it makes a black-image bug self-diagnosing.
         report["needs_fp16_vae_fix"] = properties.major == 7 and "GTX" in properties.name
         report["cudnn"] = torch.backends.cudnn.version()
-        report["fp16_narrowing_conv_broken"] = fp16_narrowing_conv_is_broken()
+        status = apply_cudnn_workaround()
+        report["fp16_conv_broken"] = status.broken
+        report["cudnn_disabled"] = status.disabled
+        report["fp16_conv_broken_without_cudnn"] = status.survives_workaround
         report["vae_upcast"] = SETTINGS.vae_upcast
     return report
 
 
-@lru_cache(maxsize=1)
-def fp16_narrowing_conv_is_broken() -> bool:
-    """Does this card return NaNs from a narrowing fp16 convolution?
+# (batch, in_channels, out_channels, height, width, kernel) shapes that have
+# actually been measured returning NaN on this project's target machine. They
+# are a *sample*, not a specification: the fault is not predictable from the
+# shape, so a pass here is no proof the build is sound, while a single failure
+# is proof it is not. Together they cost about 70 MB of VRAM and a few ms.
+_CONV_PROBE_SHAPES = (
+    (1, 256, 128, 256, 256, 3),  # VAE decoder's last block, at 1024px and above
+    (2, 2560, 1280, 24, 42, 1),  # UNet up_blocks.0 shortcut, 1344x768 under CFG
+    (2, 1920, 1280, 24, 42, 1),  # the second resnet of the same block
+)
+
+
+@dataclass(frozen=True)
+class CudnnStatus:
+    """What the fp16 convolution measurement found, and what was done about it."""
+
+    broken: bool
+    disabled: bool
+    survives_workaround: bool
+    notes: tuple[str, ...] = ()
+
+
+def _conv_probe_fails() -> bool:
+    """Does any probe shape return NaN with the current backend settings?
 
     Measured rather than inferred from the card's name. On a GTX 1660 Ti with
-    driver 591.86 and cuDNN 9.1, ``conv2d`` in fp16 with a 3x3 kernel, 256 input
-    channels and 128 output channels returns NaN for exactly a quarter of its
-    output, from finite inputs and finite weights. Widening convolutions, 1x1
-    kernels, fp32 and images under 256px are all unaffected, so a generic "is
-    this a Turing GTX card" test would both over- and under-fire.
+    driver 591.86 and cuDNN 9.1 these convolutions return NaN for exactly a
+    quarter of their output from finite inputs and finite weights, while
+    neighbouring shapes are clean: 1344x768 fails where 768x1344 and 1024x1024
+    do not, and only at batch 2. So a "is this a Turing GTX card" test would
+    both over- and under-fire, and so would any rule about kernel size or
+    narrowing, which is why the whole table is tried.
 
-    The probe costs about 50 MB of VRAM and runs once per process. A failure to
-    run it at all is reported as *not* broken: an unavailable measurement must
-    not silently switch the renderer into its slower path.
+    A failure to run the probe at all is reported as *not* broken: an
+    unavailable measurement must not silently reconfigure the renderer.
     """
     import torch
     import torch.nn.functional as F
@@ -122,20 +148,99 @@ def fp16_narrowing_conv_is_broken() -> bool:
     if not torch.cuda.is_available():
         return False
     try:
-        generator = torch.Generator(device="cuda").manual_seed(0)
-        activations = torch.randn(1, 256, 256, 256, device="cuda", dtype=torch.float16,
-                                  generator=generator) * 4
-        weights = torch.randn(128, 256, 3, 3, device="cuda", dtype=torch.float16,
-                              generator=generator) * 0.02
-        with torch.no_grad():
-            result = F.conv2d(activations, weights, padding=1)
-        torch.cuda.synchronize()
-        return bool(torch.isnan(result).any())
+        for batch, in_channels, out_channels, height, width, kernel in _CONV_PROBE_SHAPES:
+            generator = torch.Generator(device="cuda").manual_seed(0)
+            activations = torch.randn(batch, in_channels, height, width, device="cuda",
+                                      dtype=torch.float16, generator=generator) * 4
+            weights = torch.randn(out_channels, in_channels, kernel, kernel, device="cuda",
+                                  dtype=torch.float16, generator=generator) * 0.02
+            with torch.no_grad():
+                result = F.conv2d(activations, weights, padding=kernel // 2)
+            torch.cuda.synchronize()
+            if bool(torch.isnan(result).any()):
+                return True
+            del activations, weights, result
+            torch.cuda.empty_cache()
+        return False
     except Exception as exc:  # noqa: BLE001 - a probe must never break a render
         logger.warning("fp16 convolution probe failed (%s); assuming the card is sound", exc)
         return False
     finally:
         torch.cuda.empty_cache()
+
+
+def _plan_cudnn(
+    mode: str, measure: Callable[[], bool], set_enabled: Callable[[bool], None]
+) -> CudnnStatus:
+    """Decide what to do about the fp16 convolution fault. Pure, so it is testable.
+
+    ``measure()`` reports whether fp16 convolutions return NaN *with cuDNN in
+    whatever state it is currently in*, and ``set_enabled()`` changes that
+    state, so the two are called in turn rather than up front.
+    """
+    notes: list[str] = []
+    if mode not in {"auto", "on", "off"}:
+        notes.append(
+            f"unknown CLAUDALI_CUDNN '{mode}'; expected auto, on or off. Falling back to auto."
+        )
+        mode = "auto"
+
+    if mode == "off":
+        set_enabled(False)
+        notes.append("cuDNN is disabled by CLAUDALI_CUDNN=off")
+        return CudnnStatus(False, True, False, tuple(notes))
+
+    if not measure():
+        return CudnnStatus(False, False, False, tuple(notes))
+
+    if mode == "on":
+        notes.append(
+            "this machine's cuDNN returns NaN from some fp16 convolutions, which renders "
+            "images solid black, but CLAUDALI_CUDNN=on keeps it enabled. Unset it to let "
+            "ClauDali disable cuDNN instead."
+        )
+        return CudnnStatus(True, False, True, tuple(notes))
+
+    set_enabled(False)
+    if measure():
+        # cuDNN was not the culprit. Put it back rather than paying for a
+        # fallback that fixes nothing, and say so: the fp32 VAE decode is the
+        # only remaining defence and it may not be enough either.
+        set_enabled(True)
+        notes.append(
+            "this machine returns NaN from some fp16 convolutions even with cuDNN "
+            "disabled, so cuDNN is not the cause and has been left on. Images may "
+            "still come out solid black; set CLAUDALI_DTYPE=float32 to avoid fp16 "
+            "convolutions altogether."
+        )
+        return CudnnStatus(True, False, True, tuple(notes))
+
+    notes.append(
+        "this machine's cuDNN returns NaN from some fp16 convolutions, which renders "
+        "every image solid black; cuDNN is disabled for this process. On a card with "
+        "no tensor cores this costs no measurable speed. Set CLAUDALI_CUDNN=on to override."
+    )
+    return CudnnStatus(True, True, False, tuple(notes))
+
+
+@lru_cache(maxsize=1)
+def apply_cudnn_workaround() -> CudnnStatus:
+    """Turn cuDNN off for this process when its fp16 convolutions return NaN.
+
+    Process-wide, idempotent, and safe to call from a report: the measurement
+    runs once and the setting is global anyway, so there is nothing to undo.
+
+    Disabling cuDNN is the right lever rather than a per-shape workaround
+    because the fault moves with the shape in ways no rule predicts. PyTorch
+    then convolves through its own cuBLAS path, which on a card with no tensor
+    cores is not slower -- measured at 0.93x of cuDNN over a real sampler step.
+    """
+    import torch
+
+    def set_enabled(flag: bool) -> None:
+        torch.backends.cudnn.enabled = flag
+
+    return _plan_cudnn(SETTINGS.cudnn, _conv_probe_fails, set_enabled)
 
 
 def _should_upcast_vae(mode: str, is_fp16: bool, probe: Callable[[], bool]) -> bool:
@@ -152,7 +257,12 @@ def _should_upcast_vae(mode: str, is_fp16: bool, probe: Callable[[], bool]) -> b
 
 
 def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str]]:
-    """Work out the VAE's decode precision before any weights are loaded."""
+    """Work out the VAE's decode precision before any weights are loaded.
+
+    In ``auto`` this is the *second* line of defence. Disabling cuDNN already
+    clears the fp16 convolution fault wherever it can, so the fp32 decode is
+    only worth its cost when the fault outlived that.
+    """
     import torch
 
     notes: list[str] = []
@@ -164,10 +274,13 @@ def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str]]:
         )
         mode = "auto"
 
-    upcast = _should_upcast_vae(mode, torch_dtype is torch.float16, fp16_narrowing_conv_is_broken)
+    status = apply_cudnn_workaround()
+    upcast = _should_upcast_vae(
+        mode, torch_dtype is torch.float16, lambda: status.survives_workaround
+    )
     if upcast and mode == "auto":
         notes.append(
-            "this card returns NaNs from narrowing fp16 convolutions, which decodes "
+            "fp16 convolutions still return NaNs with cuDNN disabled, which decodes "
             "every image to solid black; the VAE will decode in fp32 instead. Renders "
             "are a little slower. Set CLAUDALI_VAE_UPCAST=never to override."
         )
@@ -294,12 +407,19 @@ def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
     then casts the VAE to fp32 for the decode and back afterwards. Doing it that
     way rather than casting the module here keeps img2img and inpainting, which
     share these weights through ``from_pipe``, covered by the same flag.
+
+    Written through ``register_to_config`` rather than by assigning to
+    ``vae.config.force_upcast``. A config is a ``FrozenDict``, and assigning to
+    it sets an *attribute* while leaving the dict entry at its old value, so the
+    two disagree: the pipeline happens to read the attribute today, but anything
+    reading the entry would silently skip the upcast and decode black.
     """
     notes: list[str] = []
     if not upcast:
         return notes
 
-    config = getattr(getattr(pipe, "vae", None), "config", None)
+    vae = getattr(pipe, "vae", None)
+    config = getattr(vae, "config", None)
     if config is None:
         notes.append(
             "this card needs fp32 VAE decoding but the pipeline exposes no VAE config; "
@@ -307,7 +427,11 @@ def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
         )
         return notes
 
-    config.force_upcast = True
+    register = getattr(vae, "register_to_config", None)
+    if callable(register):
+        register(force_upcast=True)
+    else:
+        config.force_upcast = True
     return notes
 
 
@@ -406,6 +530,7 @@ def load_pipeline(
 
         # Probe the card before any weights are resident: the measurement needs
         # its own VRAM, and with offload disabled there is none to spare later.
+        notes.extend(apply_cudnn_workaround().notes)
         upcast_vae, upcast_notes = _plan_vae_precision(torch_dtype)
         notes.extend(upcast_notes)
 

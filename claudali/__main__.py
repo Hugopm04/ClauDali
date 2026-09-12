@@ -50,11 +50,23 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
     print(f"model    : {compiled.model}")
     print(f"size     : {compiled.width}x{compiled.height}")
-    print(f"sampling : {compiled.steps} steps, cfg {compiled.cfg}, {compiled.sampler}\n")
+    print(f"sampling : {compiled.steps} steps, cfg {compiled.cfg}, {compiled.sampler}")
+    if compiled.tokens is not None:
+        about = "" if compiled.tokens.exact else "~"
+        anchored = (
+            f", subject restated {len(compiled.anchors)}x" if compiled.anchors else ""
+        )
+        print(
+            f"prompt   : {about}{compiled.tokens.tokens} tokens in "
+            f"{compiled.tokens.chunks} CLIP chunk(s){anchored}"
+        )
+    print()
     print(f"PROMPT\n{compiled.prompt}\n")
     print(f"NEGATIVE\n{compiled.negative_prompt}\n")
     for warning in compiled.warnings:
         print(f"warning: {warning}")
+    for note in compiled.notes:
+        print(f"note   : {note}")
     return 0
 
 

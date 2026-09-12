@@ -15,7 +15,10 @@ intents:
     steps: 32
     sampler: dpmpp_2m_karras
     quality: "sharp focus, natural skin texture, accurate proportions, believable materials"
-    negatives: [artifacts, anatomy, cgi, watermark, photo_flaws]
+    # `cgi_surface`, not `cgi`: see negatives.yaml. Photoreal wants the plastic
+    # skin guard without banning the rendered look that every impossible subject
+    # is built out of.
+    negatives: [artifacts, anatomy, cgi_surface, watermark, photo_flaws]
     lighting: softbox
     detail: high
 

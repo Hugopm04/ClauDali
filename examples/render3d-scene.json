@@ -4,11 +4,12 @@
   "notes": "Layers drive a canny control map instead of depth, which pins the object outlines without dictating their volume.",
   "subject": {
     "primary": "a brushed aluminium desk lamp beside a glass of water",
+    "anchor": "a desk lamp and a glass of water",
     "details": ["anodised finish", "visible caustics through the glass"]
   },
   "scene": { "setting": "an infinite seamless studio backdrop" },
   "style": { "medium": "render3d", "detail": "high" },
-  "camera": { "shot": "medium", "lens": "50mm", "angle": "eye_level", "focus": "deep_focus" },
+  "camera": { "shot": "tableau", "lens": "50mm", "angle": "eye_level", "focus": "deep_focus" },
   "lighting": { "key": "studio_three_point" },
   "palette": { "name": "desaturated" },
   "composition": {

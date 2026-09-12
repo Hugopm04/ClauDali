@@ -19,6 +19,7 @@ from PIL import Image, ImageFilter
 from ..compiler import CompiledPrompt, compile_spec
 from ..control.maps import build_control_image, control_repo_for_mode
 from ..spec import SceneSpec
+from . import regional
 from .pipelines import derive_pipeline, device_report, load_pipeline
 
 # Called as (step, total_steps, variation_index, total_variations).
@@ -134,7 +135,7 @@ def render(
 
     started = time.time()
     compiled = compiled or compile_spec(spec)
-    notes = list(compiled.warnings)
+    notes = [*compiled.warnings, *compiled.notes]
 
     task = _select_task(spec)
     controlnet_id = control_repo_for_mode(spec.control.mode) if spec.control.mode != "none" else None
@@ -151,6 +152,19 @@ def render(
     pipe = derive_pipeline(loaded, task)
     prompt_kwargs, encode_notes = _encode_prompts(loaded, compiled)
     notes.extend(encode_notes)
+
+    # Regional conditioning patches the UNet's cross-attention in place, so it
+    # has to be installed after the pipeline is derived and taken off again
+    # whatever happens -- the pipeline is cached, and a processor left behind
+    # would apply this job's regions to the next job's render.
+    regional_handle, regional_notes = regional.install(pipe, loaded, spec, compiled)
+    notes.extend(regional_notes)
+    if regional_handle is not None and task != "txt2img":
+        notes.append(
+            f"composition.regional was applied to a {task} render. The masks are in latent "
+            "space so this should work, but the combination has never been run; check the "
+            "result against regional.enabled=false"
+        )
 
     control_image = build_control_image(spec) if controlnet_id else None
     init_image, mask_image = _load_init_images(spec)
@@ -203,28 +217,32 @@ def render(
     if task in {"img2img", "inpaint"} and spec.init is not None:
         effective_steps = max(1, int(compiled.steps * spec.init.strength))
 
-    for index, seed in enumerate(seeds):
-        generator = torch.Generator(device="cpu").manual_seed(seed)
+    try:
+        for index, seed in enumerate(seeds):
+            generator = torch.Generator(device="cpu").manual_seed(seed)
 
-        step_callback = None
-        if progress is not None:
+            step_callback = None
+            if progress is not None:
 
-            def step_callback(  # noqa: F811 - rebound per variation on purpose
-                _pipe: Any,
-                step: int,
-                _timestep: Any,
-                callback_kwargs: dict[str, Any],
-                _index: int = index,
-            ) -> dict[str, Any]:
-                progress(step + 1, effective_steps, _index, len(seeds))
-                return callback_kwargs
+                def step_callback(  # noqa: F811 - rebound per variation on purpose
+                    _pipe: Any,
+                    step: int,
+                    _timestep: Any,
+                    callback_kwargs: dict[str, Any],
+                    _index: int = index,
+                ) -> dict[str, Any]:
+                    progress(step + 1, effective_steps, _index, len(seeds))
+                    return callback_kwargs
 
-        output = pipe(
-            generator=generator,
-            callback_on_step_end=step_callback,
-            **base_kwargs,
-        )
-        images.append(RenderedImage(image=output.images[0], seed=seed, index=index))
+            output = pipe(
+                generator=generator,
+                callback_on_step_end=step_callback,
+                **base_kwargs,
+            )
+            images.append(RenderedImage(image=output.images[0], seed=seed, index=index))
+    finally:
+        if regional_handle is not None:
+            regional_handle.remove()
 
     return RenderResult(
         images=images,

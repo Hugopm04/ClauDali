@@ -4,6 +4,7 @@
   "notes": "The photoreal intent supplies the model, cfg and negatives; only the subject and light need stating.",
   "subject": {
     "primary": "a hand-thrown stoneware coffee cup",
+    "anchor": "a stoneware coffee cup",
     "details": ["matte oatmeal glaze", "a single cobalt drip down one side", "steam rising"],
     "count": 1
   },
@@ -13,7 +14,7 @@
   },
   "style": { "medium": "photograph", "detail": "high" },
   "camera": {
-    "shot": "close_up",
+    "shot": "tight",
     "lens": "85mm",
     "aperture": "f/2.0",
     "angle": "eye_level",

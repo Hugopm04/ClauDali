@@ -30,18 +30,40 @@ consequences shaped the architecture, and none of them are negotiable:
    VAE and every image decodes to solid black. `sdxl-vae-fp16-fix` is installed
    as a *required* model and swapped in automatically. `diagnostics.failure_flags`
    detects the symptom by name, so if it ever regresses it is self-diagnosing.
-4. **The cuDNN narrowing-convolution fault.** Measured on this machine with
-   driver 591.86 and cuDNN 9.1: a fp16 3×3 `conv2d` whose output has fewer
-   channels than its input returns NaN for exactly a quarter of its values, at
-   256px and above, from finite inputs and finite weights. 1×1 kernels, widening
-   convolutions and fp32 are all clean, and so is the UNet, which never works
-   above 128px in latent space. The VAE decoder's last block is 256→128 at full
-   resolution, so **every image decodes black** — and `sdxl-vae-fp16-fix` makes
-   it worse, not better, because that VAE sets `force_upcast=False` and so keeps
-   the decode in fp16. `pipelines.fp16_narrowing_conv_is_broken()` measures the
-   card once per process and `CLAUDALI_VAE_UPCAST=auto` turns the decode to fp32
-   when it fires. Do not replace the measurement with a check on the card's name:
-   the fault is a driver and cuDNN combination, not a model of GPU.
+4. **The cuDNN fp16 convolution fault.** Measured on this machine with driver
+   591.86 and cuDNN 9.1: an fp16 `conv2d` returns NaN for exactly a quarter of
+   its values, from finite inputs and finite weights, so **every image decodes
+   black**. fp32 is clean; disabling cuDNN is clean.
+
+   **Which shapes are hit is not predictable.** Measured failures and passes sit
+   next to each other with no rule joining them:
+
+   | Shape | Where it runs | Result |
+   |---|---|---|
+   | b1 256→128 k3 256×256 | VAE decoder's last block | NaN |
+   | b2 2560→1280 k1 24×42 | UNet up-block 0 shortcut, 1344×768 | NaN |
+   | b2 2560→1280 k1 32×32 | the same conv at 1024×1024 | clean |
+   | b2 2560→1280 k1 42×24 | the same conv at 768×1344 | clean |
+   | b1/b3/b4/b8 2560→1280 k1 24×42 | any batch but 2 | clean |
+   | b2 2560→1280 k3 24×42 | 3×3 instead of 1×1 | clean |
+
+   So it is not about narrowing, not about kernel size, not about resolution and
+   not about batch — it is the combination, and it is the cuDNN kernel picked for
+   that combination. `benchmark` and `deterministic` change nothing.
+
+   The remedy is therefore to **stop using cuDNN for the whole process** rather
+   than to dodge one shape. `pipelines.apply_cudnn_workaround()` probes a table
+   of known-bad shapes once, sets `torch.backends.cudnn.enabled = False` if any
+   fails, and **re-probes to confirm the fallback is actually clean**. PyTorch's
+   own convolution path costs nothing here: measured at 0.93× cuDNN's time over
+   a real sampler step, because a 1660 Ti has no tensor cores for cuDNN to use.
+   `CLAUDALI_CUDNN` is `auto|on|off`.
+
+   The fp32 VAE decode (`CLAUDALI_VAE_UPCAST`) is now the **second** line of
+   defence: in `auto` it fires only if the fault survives disabling cuDNN. Do not
+   replace the measurement with a check on the card's name, and do not trim the
+   probe table down to one shape — a single-shape probe is exactly what let this
+   fault through the first time. It passed at 1024×1024 and failed at 1344×768.
 
 Do not "optimise" any of these away without checking `claudali doctor` output on
 the actual machine.
@@ -55,9 +77,11 @@ claudali/
   config.py       Paths and settings. Redirects HF_HOME into models/ AT IMPORT
                   TIME -- must stay import-safe and stdlib-only.
   spec.py         The SceneSpec pydantic models. The contract. extra="forbid".
+  tokens.py       Counts CLIP tokens and packs a prompt into 75-token chunks.
+                  Lazy tokenizer, fitted fallback. Stdlib at import time.
   compiler.py     spec -> weighted prompts. Reads vocabulary/*.yaml.
   vocabulary/     YAML tables: media, movements, lighting, camera, palettes,
-                  negatives, intents. Data, not code -- edit freely.
+                  negatives, intents, subjects. Data, not code -- edit freely.
   control/maps.py Procedural depth/edge/region maps from composition.layers.
                   numpy + Pillow only, no model loading.
   registry.py     Model catalogue; resolves file lists from the HF tree API.
@@ -65,6 +89,8 @@ claudali/
     pipelines.py  Loads, configures and caches diffusers pipelines. All the
                   VRAM and fp16 handling lives here.
     render.py     Runs the sampler. Chooses txt2img / img2img / inpaint.
+    regional.py   Opt-in masked cross-attention for per-layer prompts.
+                  UNTESTED on hardware; falls back loudly.
   diagnostics.py  Measurements over a finished image. Reports, never enforces.
   compose.py      Post-diffusion: Pillow overlays and exact postprocessing.
   bundle.py       Writes the output bundle (images, previews, contact sheet,
@@ -93,7 +119,8 @@ you have broken this.
 SceneSpec
    |
    |-- compiler.compile_spec ------> CompiledPrompt (prompt, negatives, model,
-   |                                  steps, cfg, sampler, size, warnings)
+   |                                  steps, cfg, sampler, size, token count,
+   |                                  chunk anchors, regions, warnings, notes)
    |-- control.maps.build_control_image -> depth / canny PNG   (optional)
    |
    v
@@ -112,7 +139,11 @@ bundle.write_bundle   ---> outputs/<stamp>_<slug>_<jobid>/
 
 1. **Nothing is silently dropped.** If a caller sets a field ClauDali cannot
    honour, either honour it, or raise with a message saying what to change.
-   Never ignore it quietly. (See `render()` raising on control + init.)
+   Never ignore it quietly. (See `render()` raising on control + init.) This is
+   the rule most easily broken by omission rather than by code:
+   `composition.layers[].prompt` was read by *nothing* for months, and the spec
+   even documented it as "reserved". If a field exists, something must consume
+   it or say why it did not.
 2. **Every compiled prompt is returned in full**, with per-fragment provenance
    and warnings. The vocabulary must never become a black box.
 3. **Unknown vocabulary keys pass through as free text with a warning.** Callers
@@ -127,6 +158,10 @@ bundle.write_bundle   ---> outputs/<stamp>_<slug>_<jobid>/
    blocking a render. Taste is the caller's.
 7. **Everything downloaded lives under the project directory.** This is what
    makes the uninstaller's promise true. Never write to `~/.cache`.
+8. **Warnings and notes are different channels.** A warning means the spec
+   probably wants changing. A note means the compiler decided something on the
+   caller's behalf and is saying so. They were one list, and collapsing them
+   trained the eye to skip both. An inferred default goes in `notes`.
 
 ## Common tasks
 
@@ -150,6 +185,18 @@ Update `approx_gb` to the measured value.
 **Add a sampler** — one entry in `SAMPLERS` in `engine/pipelines.py`, mapping to
 a diffusers scheduler class name and its kwargs.
 
+**A subject was misjudged as having, or not having, a body** — add the word to
+`person_words` in `claudali/vocabulary/subjects.yaml`. Data, no code change.
+Resist writing a smarter rule; see the gotcha below on why. The same file holds
+`plural_words`, for the warning that a one-body crop cannot hold several
+subjects.
+
+**A subject keeps disappearing from a long prompt** — read `tokens.chunks` in
+the compiled result first. Past one chunk the subject is restated per chunk, and
+`anchors` shows what was restated. If it is the whole of `subject.primary`, the
+setting is being reinforced along with the subject: set `subject.anchor` to two
+or three words naming the subject alone.
+
 **Add an overlay type** — a `Literal` member on `Overlay.type` in `spec.py`, a
 `_draw_*` function in `compose.py`, and a branch in `apply_overlays`.
 
@@ -158,7 +205,7 @@ a diffusers scheduler class name and its kwargs.
 Everything up to the sampler is deterministic and needs no weights, no CUDA and
 no network. `tests/test_claudali.py` covers the spec contract, the compiler,
 control maps, compositing, postprocessing, diagnostics and the engine's
-device decisions — 37 tests, ~1.4 s.
+device decisions — 61 tests, ~1.5 s.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -166,8 +213,11 @@ device decisions — 37 tests, ~1.4 s.
 
 Several tests are regression locks on bugs that actually happened: an explicit
 `steps: 30` being overwritten by the intent default, `horizon` being inverted,
-the gradient `direction` being backwards, and `auto` VAE upcasting ignoring the
-measured card. Do not delete them to make a change pass.
+the gradient `direction` being backwards, `auto` VAE upcasting ignoring the
+measured card, the cuDNN workaround not firing on a card that needs it, a long
+prompt leaving four of its five CLIP chunks with no mention of the subject, the
+token estimator reading 31% low, and an occupation such as "alchemist" not
+counting as a person. Do not delete them to make a change pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:
@@ -185,6 +235,65 @@ build_depth_map(spec).save('depth.png')"
 are all non-destructive and safe to run any time.
 
 ## Gotchas found the hard way
+
+- **A long prompt loses its subject, and the image looks fine without it.**
+  This is the single most expensive failure mode in the whole tool, because
+  nothing errors. CLIP reads 75 content tokens at a time; compel encodes chunk
+  after chunk and concatenates, and cross-attention is then a softmax over the
+  *whole* concatenated sequence, so every chunk votes. A subject named only in
+  chunk one is outvoted by every later chunk, and the later chunks are setting
+  and style.
+
+  Measured, not theorised. `"a photorealistic ancient forest with multiple
+  small ethereal fairies"` compiled to 306 tokens; "fairies" appeared at tokens
+  46, 58 and 73, all inside chunk one. Chunks two to five were rainforest, god
+  rays, a 50mm lens, bokeh and a green palette. All four variations rendered as
+  beautiful, empty forests.
+
+  The fix is `_assemble` in `compiler.py` plus `tokens.pack`: pack fragments
+  into groups of at most 75 tokens, reserving room for the anchor, and restate
+  `subject.anchor` at the head of every group after the first. **The packing
+  deliberately does not try to line up with compel's window boundaries**, and
+  it does not need to — with consecutive anchors at most 75 tokens apart, any
+  75-token window must contain one, or two neighbouring anchors would straddle
+  a gap the packing forbids. That pigeonhole argument is the whole guarantee;
+  `test_the_subject_appears_in_every_clip_chunk` locks it. Do not "simplify" it
+  into anchoring at fixed token offsets.
+
+- **Do not estimate CLIP tokens by counting words.** The old guard was
+  `len(prompt.split()) * 1.3`, which read 212 for the 306-token prompt above,
+  so the over-length warning never fired on the one prompt that needed it. A
+  compiled prompt is mostly commas and `(phrase)1.15` weight syntax, and every
+  bracket, comma and digit run is a token that is not a word. `tokens.py` uses
+  CLIP's own tokenizer when any model is installed and a **fitted** fallback
+  otherwise, accurate to 3.7% worst case over the example corpus. The two
+  constants in `estimate_tokens` were measured; re-fit them, do not tune them
+  by eye. The compiled result says which method was used, because a number that
+  is sometimes exact and sometimes guessed is misleading unless it says so.
+
+- **A "photoreal" negative preset can delete a fantasy subject.** The
+  `photoreal` intent used to inherit `cgi`, which is `"cgi, 3d render, video
+  game screenshot, plastic skin, uncanny valley"`. SDXL's idea of a
+  photorealistic fairy, dragon or robot is built out of illustrative and
+  rendered space, so banning that space removes the subject and leaves the
+  setting. Split into `cgi_surface` (kept) and `cgi_medium` (dropped);
+  `cgi` survives as the union for callers who name it. Do not merge them back.
+
+- **Shot keys describe where a *body* is cropped.** `medium` is "waist up" and
+  `close_up` is "head and shoulders". A forest has no waist, so SDXL resolves
+  the instruction against whatever is nearest and returns a macro shot of
+  undergrowth — which is the other half of why the fairy render was pictures of
+  moss. `scene`, `tableau`, `group` and `tight` are the bodiless equivalents.
+  The `body` and `single` flags in `camera.yaml` drive warnings only.
+
+- **The person-word list will be wrong sometimes, and that is priced in.**
+  `vocabulary/subjects.yaml` decides whether a subject has a body. The first
+  version did not know "alchemist" was a person, so it called `full_body` on
+  one a mistake. It gates two warnings and whether the `anatomy` negatives are
+  inherited — never the prompt text — and the compiler says out loud when it
+  drops them. Fix a misjudgement by adding the word, not by writing a cleverer
+  rule: a suffix rule generous enough to catch "-ist" also makes people out of
+  "mist" and "water".
 
 - **The HF tree API lists redundant weights.** SDXL repos ship both a diffusers
   folder layout *and* single-file convenience copies at the repo root. Taking
@@ -235,6 +344,14 @@ Do not add these without a reason that survives the argument against them:
 - **No depth estimation from a photo.** `control.source: "file"` with
   `mode: "depth"` uses the file as-is. Estimating would mean shipping MiDaS.
 - **No auto-retry on bad diagnostics.** See design rule 6.
+- **Regional prompting exists but is unproven.** `composition.regional` patches
+  the UNet's cross-attention processors to apply each layer's prompt inside its
+  own mask. It was written to request, it is opt-in, it has never been run on
+  the GPU, and every failure path falls back to a global render with a note. It
+  is deliberately *not* a `control.mode`, because ControlNet conditions geometry
+  through a side network while this decides which text applies where; they act
+  at different points and can combine. Do not promote it to a default, and do
+  not delete the fallback, until somebody renders with it and looks.
 - **`post.seamless` is a cross-fade heuristic**, good for organic textures and
   visibly wrong for anything structured. `post.transparent_bg` is a corner
   flood-fill, not segmentation. Both are documented as such; neither should be

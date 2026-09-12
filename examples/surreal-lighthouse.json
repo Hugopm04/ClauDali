@@ -4,6 +4,7 @@
   "notes": "Shows the procedural depth map: the layer stack fixes the composition, so the model decides the painting but not the placement.",
   "subject": {
     "primary": "a lighthouse built from stacked antique clocks",
+    "anchor": "a lighthouse of stacked clocks",
     "details": ["salt-worn brass", "one lit window", "gulls frozen mid-flight"],
     "action": "casting a beam that bends upward into the clouds"
   },

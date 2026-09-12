@@ -219,6 +219,7 @@
 
     <div class="card hidden" id="card-prompt">
       <h2>Compiled prompt</h2>
+      <div class="muted" id="prompt-tokens" style="margin-bottom:6px"></div>
       <pre id="prompt-text"></pre>
       <h2 style="margin-top:10px">Negative</h2>
       <pre id="negative-text" class="muted"></pre>
@@ -365,11 +366,26 @@ function applySpec(spec) {
 
 /* ---------- rendering results ------------------------------------------ */
 
+// CLIP reads 75 tokens at a time and every chunk votes in cross-attention, so
+// the chunk count is the first thing to look at when a subject fails to appear.
+function describeTokens(compiled) {
+  const count = compiled.tokens;
+  if (!count) return "";
+  const about = count.exact ? "" : "~";
+  const chunks = count.chunks === 1 ? "1 CLIP chunk" : count.chunks + " CLIP chunks";
+  const anchors = compiled.anchors || [];
+  const restated = anchors.length
+    ? ", subject restated " + anchors.length + "x: " + JSON.stringify(anchors[0])
+    : "";
+  return about + count.tokens + " tokens in " + chunks + restated;
+}
+
 function showCompiled(compiled) {
   $("card-prompt").classList.remove("hidden");
+  $("prompt-tokens").textContent = describeTokens(compiled);
   $("prompt-text").textContent = compiled.prompt;
   $("negative-text").textContent = compiled.negative_prompt || "(none)";
-  const warnings = compiled.warnings || [];
+  const warnings = [...(compiled.warnings || []), ...(compiled.notes || [])];
   const list = $("prompt-warnings");
   list.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
   list.classList.toggle("hidden", warnings.length === 0);

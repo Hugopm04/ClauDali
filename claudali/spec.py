@@ -55,6 +55,13 @@ class Subject(Base):
     secondary: list[str] = Field(default_factory=list, description="Supporting elements.")
     count: Optional[int] = Field(None, ge=1, le=99, description="How many of the primary subject.")
     action: Optional[str] = Field(None, description="What the subject is doing.")
+    anchor: Optional[str] = Field(
+        None,
+        description=(
+            "Two to four words naming the subject alone, restated in every CLIP chunk of a "
+            "long prompt. Defaults to `primary`, which works but also re-states the setting."
+        ),
+    )
 
 
 class Scene(Base):
@@ -142,6 +149,37 @@ class Layer(Base):
         return value
 
 
+class Regional(Base):
+    """Per-region text conditioning driven by ``composition.layers``.
+
+    When off -- the default -- a layer's ``prompt`` is compiled into the text
+    prompt as positional words ("in the left third, mid-ground"), which costs
+    nothing and lands maybe half the time. When on, each layer's prompt is
+    encoded separately and applied only inside that layer's mask, through the
+    UNet's cross-attention.
+
+    Orthogonal to ``control`` on purpose. ControlNet conditions geometry through
+    a side network; this decides which text applies where. They act at different
+    points in the UNet and can be combined, which is why this is a flag here
+    rather than another ``control.mode``.
+
+    **Untested on real hardware.** It patches diffusers' attention processors,
+    an interface that has changed repeatedly. If installing the patch fails the
+    render proceeds without it and says so in the notes, rather than dying.
+    """
+
+    enabled: bool = Field(False, description="Apply per-layer prompts as masked attention.")
+    strength: float = Field(
+        0.8,
+        ge=0.0,
+        le=1.0,
+        description="How fully a region's own conditioning replaces the global one inside its mask.",
+    )
+    feather: int = Field(
+        24, ge=0, le=256, description="Mask edge feather in pixels, to avoid hard region seams."
+    )
+
+
 class Composition(Base):
     """Framing rules and the layer stack that becomes a control map."""
 
@@ -149,6 +187,7 @@ class Composition(Base):
     rule: Optional[Literal["thirds", "centered", "golden_spiral", "symmetry", "diagonal"]] = None
     layers: list[Layer] = Field(default_factory=list)
     horizon: Optional[float] = Field(None, ge=0.0, le=1.0, description="Horizon height, 0 = top.")
+    regional: Regional = Field(default_factory=Regional)
 
     @field_validator("aspect")
     @classmethod
@@ -346,6 +385,7 @@ __all__ = [
     "Palette",
     "Composition",
     "Layer",
+    "Regional",
     "Control",
     "InitImage",
     "Render",

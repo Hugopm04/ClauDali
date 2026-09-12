@@ -150,10 +150,14 @@ Spec field: `lighting.key` — 25 keys
 
 ## Shot size
 
-Spec field: `camera.shot` — 12 keys
+Spec field: `camera.shot` — 16 keys
 
 | Key | Expands to | Weight |
 |---|---|---|
+| `scene` | scene framing, subject at natural scale within its environment, surroundings legible | 1.12 |
+| `group` | group shot, several subjects together in frame, each one fully visible and distinct | 1.12 |
+| `tableau` | tableau framing, the whole arrangement visible at once, every element readable | 1.1 |
+| `tight` | tight framing, the subject filling most of the frame, edges cropped close | 1.12 |
 | `extreme_wide` | extreme wide shot, subject small in a vast environment, establishing scale | 1.12 |
 | `wide` | wide shot, full environment visible around the subject | 1.1 |
 | `full_body` | full body shot, head to feet in frame | 1.12 |
@@ -270,7 +274,7 @@ Spec field: `style.detail` — 4 keys
 
 ## Negative presets
 
-Spec field: `negative.presets[]` — 16 keys
+Spec field: `negative.presets[]` — 18 keys
 
 | Key | Expands to | Weight |
 |---|---|---|
@@ -284,12 +288,30 @@ Spec field: `negative.presets[]` — 16 keys
 | `render_flaws` | clipping geometry, z-fighting, untextured, default grey material, aliased edges | 1.0 |
 | `clutter` | cluttered background, busy composition, distracting elements, visual noise | 1.0 |
 | `amateur` | amateur, poorly composed, awkward crop, cheap looking | 1.0 |
+| `cgi_surface` | plastic skin, waxy shading, uncanny valley, lifeless eyes, rubbery materials | 1.0 |
+| `cgi_medium` | cgi, 3d render, video game screenshot | 1.0 |
 | `cgi` | cgi, 3d render, video game screenshot, plastic skin, uncanny valley | 1.0 |
 | `cartoon` | cartoon, anime, illustration, drawing, painting | 1.0 |
 | `photographic` | photograph, photorealistic, dslr, camera | 1.0 |
 | `smooth` | smooth gradients, airbrushed, anti-aliased, soft blur | 1.0 |
 | `frame` | picture frame, border, matte, passepartout, torn edges | 1.0 |
 | `duplicates` | duplicate subject, cloned elements, repeated faces, mirrored artifacts | 1.0 |
+
+## Subject word lists
+
+Plain lists, not keys. They decide whether a subject description
+contains a body, and whether it asks for more than one thing. Nothing
+here edits a prompt: they gate a framing warning, and whether an
+intent's implicit `anatomy` negatives are inherited. Both are keyword
+tests, so both are wrong sometimes — **add a word to
+`claudali/vocabulary/subjects.yaml` when a subject of yours is
+misjudged**, no code change needed.
+
+| List | Entries | Used for |
+|---|---|---|
+| `person_words` | 110 | has a face and hands, fantasy humanoids included |
+| `person_suffixes` | 5 | matched as suffixes, for the occupation tail |
+| `plural_words` | 13 | means more than one, so one body cannot frame it |
 
 ## Palette colours
 

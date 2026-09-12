@@ -1,0 +1,158 @@
+# Word lists used to decide whether a subject description contains a body, and
+# whether it asks for more than one of something.
+#
+# These drive two things and neither of them edits the prompt:
+#
+# 1. A warning when `camera.shot` crops a human body and the subject names
+#    nobody to crop. `medium` expands to "waist up", which a forest does not
+#    have, so SDXL resolves it as a close-up of the nearest thing. That was a
+#    measured failure, not a hypothetical.
+# 2. Whether an intent's implicit `anatomy` negatives are inherited. Hand and
+#    face flaws cannot occur on a teapot, and spending a third of the negative
+#    budget on them there is waste. The compiler says out loud when it drops
+#    them, and an explicit entry in `negative.presets` always wins.
+#
+# It is a keyword list, so it is wrong sometimes. That is why it only warns.
+# **If a subject of yours is misjudged, add the word here** -- this is data, no
+# code change is needed. Occupations are the long tail: every trade is a person
+# and no list of them is ever finished.
+
+# Anything with a face and hands, fantasy humanoids included. A fairy has both,
+# so the anatomy negatives are worth keeping and a body crop is not absurd.
+person_words:
+  - alchemist
+  - angel
+  - archer
+  - artisan
+  - artist
+  - astronaut
+  - athlete
+  - baby
+  - baker
+  - bard
+  - blacksmith
+  - boy
+  - captain
+  - chef
+  - child
+  - children
+  - couple
+  - cowboy
+  - crowd
+  - cyclist
+  - dancer
+  - demon
+  - detective
+  - diver
+  - doctor
+  - druid
+  - dwarf
+  - elf
+  - elves
+  - explorer
+  - fairies
+  - fairy
+  - farmer
+  - figure
+  - figures
+  - fisherman
+  - gardener
+  - ghost
+  - giant
+  - girl
+  - goblin
+  - god
+  - goddess
+  - guard
+  - guitarist
+  - hero
+  - hunter
+  - human
+  - humans
+  - keeper
+  - kid
+  - king
+  - knight
+  - lady
+  - librarian
+  - man
+  - mechanic
+  - men
+  - merchant
+  - mermaid
+  - miner
+  - monk
+  - musician
+  - nomad
+  - nun
+  - nurse
+  - nymph
+  - orc
+  - painter
+  - people
+  - person
+  - pianist
+  - pilgrim
+  - pilot
+  - pirate
+  - poet
+  - portrait
+  - priest
+  - princess
+  - prince
+  - queen
+  - ranger
+  - rider
+  - robot
+  - sailor
+  - samurai
+  - scholar
+  - scientist
+  - scribe
+  - shepherd
+  - smith
+  - soldier
+  - sorcerer
+  - sprite
+  - swimmer
+  - teacher
+  - thief
+  - tourist
+  - traveller
+  - traveler
+  - troll
+  - vampire
+  - villager
+  - warrior
+  - witch
+  - wizard
+  - woman
+  - women
+  - worker
+  - writer
+
+# Suffixes that reliably mean "a person who does a thing". Length-guarded,
+# because -ist also ends "mist", "twist" and "fist". Kept short on purpose: a
+# clever suffix rule is how "flower" and "water" become people.
+person_suffixes:
+  - smith
+  - keeper
+  - wright
+  - woman
+  - women
+
+# Words that mean more than one, so a single-body crop cannot contain them.
+plural_words:
+  - couple
+  - crowd
+  - dozens
+  - flock
+  - group
+  - many
+  - multiple
+  - pair
+  - several
+  - swarm
+  - three
+  - trio
+  - two

@@ -4,6 +4,7 @@
   "notes": "The model never draws the lettering. The gradient scrim and the two text overlays are composited afterwards with Pillow, so they are exact and legible.",
   "subject": {
     "primary": "an abstract mountain range built from overlapping paper cutouts",
+    "anchor": "paper cutout mountains",
     "details": ["layered depth", "generous empty sky"]
   },
   "style": { "medium": "vector_flat", "movement": "bauhaus", "detail": "minimal" },

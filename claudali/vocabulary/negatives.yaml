@@ -36,6 +36,20 @@ negatives:
   amateur:
     prompt: "amateur, poorly composed, awkward crop, cheap looking"
 
+  # Split in two, because the halves do different jobs and one of them is
+  # hostile to whole categories of subject. `cgi_surface` names the flaws that
+  # make a rendered *photograph* look fake, and is what `photoreal` wants.
+  # `cgi_medium` names the medium itself, which suppresses anything SDXL only
+  # knows how to draw: a photorealistic fairy, dragon or robot lives in
+  # illustrative and rendered space, so pushing that space away deletes the
+  # subject. Measured: a forest-with-fairies prompt rendered as an empty forest.
+  # `cgi` is kept as the union for callers who ask for it by name.
+  cgi_surface:
+    prompt: "plastic skin, waxy shading, uncanny valley, lifeless eyes, rubbery materials"
+
+  cgi_medium:
+    prompt: "cgi, 3d render, video game screenshot"
+
   cgi:
     prompt: "cgi, 3d render, video game screenshot, plastic skin, uncanny valley"
 

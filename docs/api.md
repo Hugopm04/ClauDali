@@ -107,7 +107,12 @@ A finished job carries a `bundle`, which is also written to disk as
     "steps": 32, "cfg": 5.5, "sampler": "dpmpp_2m_karras",
     "width": 896, "height": 1152,
     "fragments": [ { "source": "medium", "key": "photograph", "text": "...", "weight": 1.1 } ],
-    "warnings": []
+    "tokens": { "tokens": 239, "chunks": 4, "exact": true, "source": "clip-tokenizer" },
+    "negative_tokens": { "tokens": 112, "chunks": 2, "exact": true, "source": "clip-tokenizer" },
+    "anchors": ["a stoneware coffee cup", "a stoneware coffee cup", "a stoneware coffee cup"],
+    "regions": [],
+    "warnings": [],
+    "notes": []
   },
   "variations": [
     {
@@ -176,9 +181,28 @@ result surprises you.
   "model": "dreamshaper-xl", "steps": 34, "cfg": 7.5,
   "width": 1216, "height": 832,
   "fragments": [ "..." ],
-  "warnings": ["camera: lens specified with non-optical medium 'woodcut'"]
+  "tokens": { "tokens": 228, "chunks": 4, "exact": true, "source": "clip-tokenizer" },
+  "anchors": ["a lighthouse of stacked clocks"],
+  "regions": [],
+  "warnings": ["camera: lens specified with non-optical medium 'woodcut'"],
+  "notes": []
 }
 ```
+
+`warnings` and `notes` mean different things and are worth reading differently.
+A **warning** says the spec probably wants changing: a field that cannot take
+effect, a shot that contradicts the subject, a prompt long enough that its
+detail is spread thin. A **note** says the compiler decided something on your
+behalf and is telling you so, such as leaving out an intent's implicit `anatomy`
+negatives because the subject names no person. Both are shown in the web UI.
+
+`tokens` is the measurement that matters most when a subject fails to appear.
+`chunks` above one means CLIP read the prompt in several passes, and `anchors`
+lists the subject restated at the head of each of them — see
+[scene-spec.md](scene-spec.md) for why that is the difference between a forest
+with fairies in it and an empty forest. `exact` is `false`, and `source` is
+`estimate`, only when no model has been installed yet and there is no tokenizer
+to count with.
 
 ### `POST /api/control-preview`
 
@@ -209,18 +233,21 @@ Designed so a caller can learn the format without reading documentation.
     "torch": "2.4.0+cu124", "cuda_available": true,
     "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0,
     "compute_capability": "7.5", "needs_fp16_vae_fix": true,
-    "cudnn": 90100, "fp16_narrowing_conv_broken": true, "vae_upcast": "auto",
+    "cudnn": 90100, "fp16_conv_broken": true, "cudnn_disabled": true,
+    "fp16_conv_broken_without_cudnn": false, "vae_upcast": "auto",
     "offload": "model", "dtype": "float16"
   },
   "queue": { "queued": 0, "running": 1, "done": 12, "error": 0, "worker_alive": true }
 }
 ```
 
-`fp16_narrowing_conv_broken` is measured on the card, not inferred from its name:
-it is true when a half-precision convolution that narrows its channel count
-returns NaNs, which decodes every image to solid black. When it is true and
-`vae_upcast` is `auto` or `always`, the VAE decodes in fp32 to work around it,
-which costs a few seconds per image.
+`fp16_conv_broken` is measured on the card, not inferred from its name: it is
+true when a half-precision convolution returns NaNs, which turns every image
+solid black. `cudnn_disabled` says ClauDali turned cuDNN off for the process to
+work around it, which is the normal outcome and costs no measurable speed on a
+card without tensor cores. `fp16_conv_broken_without_cudnn` is the re-measure
+that confirms it worked; when that is true as well, the VAE also decodes in fp32
+if `vae_upcast` is `auto` or `always`.
 
 ---
 

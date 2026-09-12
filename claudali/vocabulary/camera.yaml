@@ -3,7 +3,33 @@
 # The compiler keeps whatever the caller asked for, but warns when lens or
 # aperture is combined with a non-optical medium (a woodcut has no f-stop).
 
+# Several of these keys describe where a *body* is cropped. That is what you want
+# for a person and actively wrong for anything else: `medium` asks SDXL for a
+# waist-up crop, a forest has no waist, and it resolves as a macro close-up of
+# the nearest undergrowth. Measured on a real render, not a worry.
+#
+# Two optional flags carry that to the compiler, which warns rather than
+# changing anything:
+#
+#   body:   crops a human body, so it needs a body in the subject
+#   single: frames exactly one body, so it cannot hold several subjects
+#
+# `scene`, `group`, `tableau` and `tight` are the bodiless equivalents. They
+# frame a subject at its natural size in an environment, or fill the frame with
+# it, without implying anatomy.
 shot:
+  scene:
+    prompt: "scene framing, subject at natural scale within its environment, surroundings legible"
+    weight: 1.12
+  group:
+    prompt: "group shot, several subjects together in frame, each one fully visible and distinct"
+    weight: 1.12
+  tableau:
+    prompt: "tableau framing, the whole arrangement visible at once, every element readable"
+    weight: 1.1
+  tight:
+    prompt: "tight framing, the subject filling most of the frame, edges cropped close"
+    weight: 1.12
   extreme_wide:
     prompt: "extreme wide shot, subject small in a vast environment, establishing scale"
     weight: 1.12
@@ -13,12 +39,17 @@ shot:
   full_body:
     prompt: "full body shot, head to feet in frame"
     weight: 1.12
+    body: true
   medium:
     prompt: "medium shot, subject from the waist up"
     weight: 1.1
+    body: true
+    single: true
   close_up:
     prompt: "close-up, head and shoulders filling the frame"
     weight: 1.12
+    body: true
+    single: true
   extreme_close_up:
     prompt: "extreme close-up, a single detail filling the entire frame"
     weight: 1.15
@@ -37,6 +68,8 @@ shot:
   over_shoulder:
     prompt: "over the shoulder framing, foreground figure out of focus"
     weight: 1.1
+    body: true
+    single: true
   establishing:
     prompt: "establishing shot, the whole location legible at once"
     weight: 1.1

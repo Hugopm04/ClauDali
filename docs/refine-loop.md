@@ -33,11 +33,23 @@ curl -X POST localhost:8188/api/compile -H "Content-Type: application/json" -d @
 
 Read the `prompt` field and ask:
 
+- **How many chunks is it?** Read `tokens.chunks`. CLIP reads 75 tokens at a
+  time, and every chunk votes in cross-attention, so a four-chunk prompt is
+  four prompts averaged together. The compiler restates the subject in each one
+  (`anchors` shows where), which is what stops a long prompt rendering the
+  setting and forgetting the subject. Set `subject.anchor` to two or three words
+  naming the subject alone; without it `primary` is used and the setting gets
+  restated too.
 - **Is the subject buried?** CLIP weighs early tokens most. If your subject is
   behind four style fragments, cut the style, not the subject.
-- **Are there warnings?** An unknown vocabulary key means you got free text
-  where you expected curated phrasing — often a typo (`rembrant` for
-  `rembrandt`).
+- **Are there warnings or notes?** A warning means the spec wants changing; a
+  note means the compiler decided something for you. An unknown vocabulary key
+  means you got free text where you expected curated phrasing — often a typo
+  (`rembrant` for `rembrandt`).
+- **Does the framing assume a body?** `shot: medium` is "waist up" and
+  `close_up` is "head and shoulders". On a landscape, an object or a swarm of
+  small creatures those resolve as a tight crop of whatever is nearest. Use
+  `scene`, `tableau`, `group` or `tight`.
 - **Is the prompt fighting itself?** `medium: photograph` with
   `movement: cubism` compiles to a request for a photorealistic cubist image.
   SDXL will pick one, probably not the one you meant.
@@ -79,7 +91,7 @@ Then read `result.json` for what the preview hides.
 
 | Signal | What it means | Likely fix |
 |---|---|---|
-| `flags` contains the black-frame message | The VAE decoded to NaNs | Run `claudali doctor`: if `fp16_narrowing_conv_broken`, set `CLAUDALI_VAE_UPCAST=always`, else check `sdxl-vae-fp16-fix` is installed |
+| `flags` contains the black-frame message | Something upstream produced NaNs | Run `claudali doctor`: if `fp16_conv_broken` and not `cudnn_disabled`, set `CLAUDALI_CUDNN=off`; if cuDNN is already off, add `CLAUDALI_VAE_UPCAST=always`; else check `sdxl-vae-fp16-fix` is installed |
 | `exposure.dynamic_range` < 25 | Flat, muddy image | Raise `steps`, or `palette.contrast: "high"` |
 | `exposure.highlight_clip_pct` > 8 | Blown highlights | Lower `render.cfg` by 1–2 |
 | `detail.laplacian_variance` much lower than siblings | That variation is soft | Prefer a sharper seed; or `camera.focus: "tack_sharp"` |

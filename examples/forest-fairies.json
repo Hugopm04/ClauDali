@@ -1,0 +1,34 @@
+{
+  "name": "forest fairies",
+  "intent": "photoreal",
+  "notes": "A worked example of the four things that decide whether a small subject survives a long prompt. 1. `subject.anchor` is two words naming the subject alone, restated in every CLIP chunk; without it the four chunks after the first describe a forest with nothing in it, and an empty forest is what renders. 2. The subject line leads with the fairies, not the forest, so the head noun is the thing that matters. 3. `shot` is `scene`, not `medium`: a waist-up crop needs a waist, and on a forest it resolves as a macro shot of undergrowth. 4. `cgi_medium` is not among the negatives, because SDXL's idea of a photorealistic fairy is built out of illustrative and rendered space and banning that space deletes the subject. The insect negatives are there because the first attempts produced convincing bugs.",
+  "subject": {
+    "primary": "small ethereal fairies hovering in an ancient forest",
+    "anchor": "small ethereal fairies",
+    "count": 3,
+    "details": [
+      "slender human figures the size of a hand",
+      "translucent gossamer wings catching the light",
+      "trailing motes of pollen"
+    ],
+    "action": "hovering above a glowing foxglove, one reaching toward it"
+  },
+  "scene": {
+    "setting": "a mossy old-growth clearing, ferns and fallen bark",
+    "time": "golden hour",
+    "weather": "drifting mist"
+  },
+  "style": {
+    "medium": "cinematic_still",
+    "movement": "magic_realism",
+    "detail": "high"
+  },
+  "camera": { "shot": "scene", "lens": "85mm", "angle": "eye_level", "focus": "shallow_dof" },
+  "lighting": { "key": "god_rays" },
+  "palette": { "name": "forest", "contrast": "normal" },
+  "composition": { "aspect": "16:9", "rule": "thirds", "horizon": 0.62 },
+  "render": { "model": "juggernaut-xl", "variations": 4 },
+  "negative": {
+    "extra": ["insect, moth, butterfly, dragonfly, beetle", "dolls, statues, figurines"]
+  }
+}

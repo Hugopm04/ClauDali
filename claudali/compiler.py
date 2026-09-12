@@ -24,7 +24,8 @@ from typing import Any, Optional
 
 import yaml
 
-from .spec import SceneSpec
+from . import tokens
+from .spec import Layer, SceneSpec
 
 VOCAB_DIR = Path(__file__).resolve().parent / "vocabulary"
 
@@ -51,6 +52,7 @@ FRAGMENT_ORDER = [
     "action",
     "details",
     "secondary",
+    "layer",
     "setting",
     "time",
     "weather",
@@ -111,7 +113,20 @@ class CompiledPrompt:
     height: int
     fragments: list[Fragment] = field(default_factory=list)
     negative_fragments: list[Fragment] = field(default_factory=list)
+    # Two channels, because they ask different things of the reader. A *warning*
+    # means the spec probably wants changing: a field that cannot take effect, a
+    # shot that contradicts the subject. A *note* means the compiler decided
+    # something on the caller's behalf and is saying so. Collapsing them trained
+    # the eye to skip both.
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    tokens: Optional[tokens.TokenCount] = None
+    negative_tokens: Optional[tokens.TokenCount] = None
+    # One entry per CLIP chunk after the first, naming the anchor restated at
+    # its head. Empty when the prompt fits in a single chunk.
+    anchors: list[str] = field(default_factory=list)
+    # Per-layer prompts encoded separately, when composition.regional is on.
+    regions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +141,11 @@ class CompiledPrompt:
             "fragments": [f.to_dict() for f in self.fragments],
             "negative_fragments": [f.to_dict() for f in self.negative_fragments],
             "warnings": self.warnings,
+            "notes": self.notes,
+            "tokens": self.tokens.to_dict() if self.tokens else None,
+            "negative_tokens": self.negative_tokens.to_dict() if self.negative_tokens else None,
+            "anchors": self.anchors,
+            "regions": self.regions,
         }
 
 
@@ -167,6 +187,7 @@ class _Builder:
         self.positive: list[Fragment] = []
         self.negative: list[Fragment] = []
         self.warnings: list[str] = []
+        self.notes: list[str] = []
 
     # -- fragment helpers -------------------------------------------------
 
@@ -244,6 +265,136 @@ def _order(fragments: list[Fragment]) -> list[Fragment]:
     return sorted(fragments, key=lambda f: rank.get(f.source.split(":")[0], len(rank)))
 
 
+def _subject_words(spec: SceneSpec) -> set[str]:
+    """Every lowercased word the caller used to describe the subject."""
+    source = " ".join(
+        [
+            spec.subject.primary,
+            spec.subject.action or "",
+            *spec.subject.details,
+            *spec.subject.secondary,
+        ]
+    ).lower()
+    return {word.strip(".,;:!?()'\"-") for word in source.split()} - {""}
+
+
+def _names_a_person(spec: SceneSpec, vocab: dict[str, Any]) -> bool:
+    """Whether the subject description mentions anything with a body.
+
+    The word lists live in ``vocabulary/subjects.yaml`` because they are data and
+    permanently incomplete: every trade is a person and no list of occupations
+    is ever finished. A subject this misjudges is fixed by adding a word there,
+    with no code change. The suffix rule catches the ``-smith`` and ``-keeper``
+    tail; it is deliberately not extended to ``-ist`` or ``-er``, which would
+    make people out of "mist" and "water".
+    """
+    words = _subject_words(spec)
+    if words & set(vocab.get("person_words", [])):
+        return True
+    suffixes = tuple(vocab.get("person_suffixes", []))
+    return bool(suffixes) and any(word.endswith(suffixes) for word in words)
+
+
+def _names_several(spec: SceneSpec, vocab: dict[str, Any]) -> bool:
+    """Whether the caller asked for more than one of the subject."""
+    if spec.subject.count and spec.subject.count > 1:
+        return True
+    return bool(_subject_words(spec) & set(vocab.get("plural_words", [])))
+
+
+def _shot_flag(vocab: dict[str, Any], key: Optional[str], flag: str) -> bool:
+    """Read an optional boolean off a shot vocabulary entry."""
+    entry = vocab.get("shot", {}).get(key) if key else None
+    return bool(entry.get(flag)) if isinstance(entry, dict) else False
+
+
+def describe_position(layer: Layer) -> str:
+    """Turn a layer's bbox and depth into the words SDXL has some chance of using.
+
+    A nudge, not a constraint. SDXL follows positional language weakly -- expect
+    it to land roughly half the time -- but it costs nothing at render time and
+    it is the honest alternative to reading ``layer.prompt`` and doing nothing
+    with it. ``composition.regional`` is the version that actually enforces
+    placement.
+    """
+    x0, y0, x1, y1 = layer.bbox
+    x, y = (x0 + x1) / 2, (y0 + y1) / 2
+    parts: list[str] = []
+    if (x1 - x0) > 0.8 and (y1 - y0) > 0.8:
+        parts.append("filling the frame")
+    else:
+        parts.append(
+            "in the left third" if x < 0.34
+            else "in the right third" if x > 0.66
+            else "centred in frame"
+        )
+        if y < 0.34:
+            parts.append("high in the frame")
+        elif y > 0.66:
+            parts.append("low in the frame")
+    # `depth` is 0 = far, 1 = near, matching the depth map the same numbers build.
+    parts.append(
+        "in the foreground" if layer.depth > 0.66
+        else "in the far distance" if layer.depth < 0.34
+        else "in the mid-ground"
+    )
+    return ", ".join(parts)
+
+
+def _assemble(pieces: list[str], anchor: str) -> tuple[str, list[str], list[str]]:
+    """Join fragments into one prompt, restating ``anchor`` once per CLIP chunk.
+
+    This is the fix for the failure that motivated the whole module. SDXL reads
+    75 content tokens at a time and compel concatenates the chunks, so a long
+    prompt is really several prompts whose embeddings are averaged by
+    cross-attention. A subject named only in the first chunk is outvoted by
+    every later chunk, all of which describe a scene with nothing in it: a
+    306-token forest-with-fairies prompt mentioned fairies only in tokens 46 to
+    73 and rendered four empty forests.
+
+    Restating the subject at the head of each chunk fixes that. The packing in
+    :func:`claudali.tokens.pack` reserves room for the anchor and never exceeds
+    a chunk, which is what makes the guarantee hold even though these chunk
+    boundaries do not line up with compel's -- see that function for why.
+
+    Returns the prompt, the anchors that were inserted, and any warnings.
+    """
+    warnings: list[str] = []
+    if not pieces:
+        return "", [], warnings
+    groups = tokens.pack(pieces, anchor=anchor)
+    if len(groups) <= 1 or not anchor.strip():
+        return ", ".join(pieces), [], warnings
+
+    oversize = [
+        piece
+        for piece in pieces
+        if tokens.count_content_tokens(piece)[0] > tokens.CHUNK_CONTENT_TOKENS
+    ]
+    if oversize:
+        warnings.append(
+            f"a single fragment is longer than one CLIP chunk ({oversize[0][:40]}...); the "
+            "subject cannot be restated inside it, so part of the prompt will not mention "
+            "the subject. Split it into shorter fragments."
+        )
+
+    # A chunk boundary can fall right after the subject fragment itself, which
+    # would print the subject twice in a row. Skipping the anchor there is safe:
+    # the guarantee is that every chunk mentions the subject, and that chunk
+    # plainly does.
+    needle = anchor.lower()
+    parts = [", ".join(groups[0])]
+    anchors: list[str] = []
+    for previous, group in zip(groups, groups[1:]):
+        adjacent = f"{previous[-1]} {group[0]}".lower()
+        if needle in adjacent:
+            parts.append(", ".join(group))
+            continue
+        anchors.append(anchor)
+        parts.append(", ".join([anchor, *group]))
+    return ", ".join(parts), anchors, warnings
+
+
 def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     """Compile a :class:`~claudali.spec.SceneSpec` into renderer parameters."""
     vocab = load_vocabulary()
@@ -296,6 +447,20 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     builder.add_key("angle", "angle", spec.camera.angle)
     builder.add_key("focus", "focus", spec.camera.focus)
 
+    if _shot_flag(vocab, spec.camera.shot, "body") and not _names_a_person(spec, vocab):
+        builder.warnings.append(
+            f"camera.shot '{spec.camera.shot}' crops a human body, and the subject names "
+            "nobody, so SDXL has no body to crop and will resolve it as a tight close-up of "
+            "whatever is nearest. Use 'scene', 'tableau', 'wide' or 'extreme_wide' to frame a "
+            "subject inside an environment."
+        )
+    if _shot_flag(vocab, spec.camera.shot, "single") and _names_several(spec, vocab):
+        builder.warnings.append(
+            f"camera.shot '{spec.camera.shot}' frames one body, but the subject asks for "
+            "several. Use 'group' to keep them all in frame, or 'scene' to place them in "
+            "their surroundings."
+        )
+
     if medium and medium not in OPTICAL_MEDIA:
         optical_asked = [spec.camera.lens, spec.camera.aperture, spec.camera.focus]
         if any(optical_asked):
@@ -307,6 +472,48 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     # -- composition ------------------------------------------------------
     rule = spec.composition.rule or intent.get("composition_rule")
     builder.add_key("rule", "rule", rule)
+
+    # A layer's `prompt` used to be read by nothing at all: the field existed,
+    # callers could fill it in, and it vanished without a warning. Now it either
+    # becomes positional words here, or -- with composition.regional on -- is
+    # encoded separately and applied inside the layer's own mask.
+    regional = spec.composition.regional
+    described = [layer for layer in spec.composition.layers if layer.prompt]
+    regions: list[dict[str, Any]] = []
+    if described and regional.enabled:
+        regions = [
+            {
+                "role": layer.role,
+                "prompt": layer.prompt,
+                "bbox": list(layer.bbox),
+                "shape": layer.shape,
+                "depth": layer.depth,
+            }
+            for layer in described
+        ]
+        builder.notes.append(
+            f"composition.regional is on, so {len(regions)} layer prompts are conditioned "
+            "through masked cross-attention rather than added to the text prompt. That path "
+            "is untested on real hardware; if it fails the render falls back and says so."
+        )
+    else:
+        for layer in described:
+            builder.add_text("layer", f"{layer.prompt}, {describe_position(layer)}")
+
+    if spec.composition.layers and spec.control.mode == "none":
+        # Geometry still only reaches the render through a ControlNet map, so a
+        # carefully placed stack is still a wish without one. Saying so is the
+        # rule; what changed is that the prompts are no longer lost with it.
+        honoured = (
+            f" The {len(described)} layer prompts were compiled as positional text instead."
+            if described and not regional.enabled
+            else ""
+        )
+        builder.warnings.append(
+            f"composition.layers: {len(spec.composition.layers)} layers were given but "
+            "control.mode is 'none', so their geometry is not used. Set control.mode to "
+            f"'depth' or 'canny' to constrain it, or drop the layers.{honoured}"
+        )
     if spec.composition.horizon is not None:
         # `horizon` is a y coordinate: 0 is the top edge, 1 the bottom. A
         # horizon near the top leaves most of the frame to the ground; a horizon
@@ -343,7 +550,20 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     # -- negatives --------------------------------------------------------
     presets = list(spec.negative.presets)
     if not spec.negative.disable_defaults:
-        for preset in intent.get("negatives", []):
+        # `anatomy` lists hand and face failures. On a subject with no body it
+        # spends a third of the negative budget on flaws that cannot occur, and
+        # steers away from figures in a scene that should have them. Dropped
+        # only from the intent's *defaults*: a preset the caller listed by name
+        # is theirs, and explicit beats inferred.
+        inherited = list(intent.get("negatives", []))
+        if "anatomy" in inherited and not _names_a_person(spec, vocab):
+            inherited.remove("anatomy")
+            builder.notes.append(
+                f"intent '{spec.intent}' would add the 'anatomy' negatives, but the subject "
+                "names no person, so they were left out. Add 'anatomy' to negative.presets to "
+                "force them."
+            )
+        for preset in inherited:
             if preset not in presets:
                 presets.append(preset)
     for preset in presets:
@@ -359,31 +579,59 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     positive_fragments = _dedupe(_order(builder.positive))
     negative_fragments = _dedupe(builder.negative)
 
-    prompt = ", ".join(f.render() for f in positive_fragments if f.render())
+    pieces = [rendered for f in positive_fragments if (rendered := f.render())]
+    if spec.raw.prepend:
+        pieces.insert(0, spec.raw.prepend.strip())
+    if spec.raw.append:
+        pieces.append(spec.raw.append.strip())
+
+    # The anchor is whatever names the subject on its own. `subject.primary`
+    # works and is the safe default, but it usually carries the setting with it
+    # -- restating "ancient forest with fairies" reinforces the forest just as
+    # hard as the fairies, and the forest was already winning. A two-word
+    # anchor repeats only the half that is losing.
+    anchor = (spec.subject.anchor or spec.subject.primary).strip()
+    prompt, anchors, assembly_warnings = _assemble(pieces, anchor)
+    builder.warnings.extend(assembly_warnings)
+
     negative_prompt = ", ".join(f.render() for f in negative_fragments if f.render())
 
-    if spec.raw.prepend:
-        prompt = f"{spec.raw.prepend.strip()}, {prompt}"
-    if spec.raw.append:
-        prompt = f"{prompt}, {spec.raw.append.strip()}"
     if spec.raw.prompt:
         prompt = spec.raw.prompt
-        builder.warnings.append("raw.prompt set: the compiled positive prompt was discarded")
+        anchors = []
+        builder.warnings.append(
+            "raw.prompt set: the compiled positive prompt was discarded, and with it the "
+            "per-chunk subject anchoring. A raw prompt past 75 tokens is on its own."
+        )
     if spec.raw.negative_prompt:
         negative_prompt = spec.raw.negative_prompt
         builder.warnings.append("raw.negative_prompt set: compiled negatives were discarded")
 
     width, height = spec.resolution()
 
-    # SDXL's text encoders take 77 tokens per chunk. compel concatenates extra
-    # chunks rather than truncating, so two chunks are unremarkable and warning
-    # about them would just train callers to ignore warnings. Past three chunks
-    # the dilution is real and worth saying out loud.
-    approx_tokens = len(prompt.split()) * 1.3
-    if approx_tokens > 225:
+    prompt_tokens = tokens.count(prompt)
+    negative_count = tokens.count(negative_prompt)
+
+    # Only worth saying when the fallback anchor is long enough that repeating it
+    # costs something. A three-token subject restated per chunk is free and
+    # exactly right; warning about it would train callers to ignore warnings.
+    anchor_tokens = tokens.count_content_tokens(anchor)[0]
+    if anchors and not spec.subject.anchor and anchor_tokens > 6:
         builder.warnings.append(
-            f"prompt is long (~{int(approx_tokens)} tokens); later fragments will have "
-            "little influence. Consider trimming details or descriptors."
+            f"the prompt spans {prompt_tokens.chunks} CLIP chunks, so the subject was restated "
+            f"in each one using subject.primary ({anchor_tokens} tokens, {len(anchors)} times). "
+            "Set subject.anchor to a short phrase naming the subject alone: restating the "
+            "setting along with it reinforces the setting too."
+        )
+    # Anchoring keeps every chunk on-subject, so length is no longer the danger
+    # it was; the remaining cost is that each chunk's non-subject material gets
+    # thinner. Five chunks is where that starts to show.
+    if prompt_tokens.chunks > 4:
+        approx = "" if prompt_tokens.exact else "~"
+        builder.warnings.append(
+            f"prompt is {approx}{prompt_tokens.tokens} tokens across {prompt_tokens.chunks} "
+            "CLIP chunks. The subject is restated in each, but everything else is thinly "
+            "spread. Consider trimming details or descriptors."
         )
 
     # Pydantic records which fields the caller actually supplied, which is the
@@ -408,11 +656,17 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
         fragments=positive_fragments,
         negative_fragments=negative_fragments,
         warnings=builder.warnings,
+        notes=builder.notes,
+        tokens=prompt_tokens,
+        negative_tokens=negative_count,
+        anchors=anchors,
+        regions=regions,
     )
 
 
 __all__ = [
     "CompiledPrompt",
+    "describe_position",
     "Fragment",
     "compile_spec",
     "load_vocabulary",

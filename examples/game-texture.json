@@ -4,6 +4,7 @@
   "notes": "post.seamless makes the result tile edge to edge; a 1:1 aspect keeps it square for a texture atlas.",
   "subject": {
     "primary": "weathered granite cobblestones with moss in the joints",
+    "anchor": "granite cobblestones",
     "details": ["damp", "uneven wear", "fine lichen speckle"]
   },
   "style": { "medium": "photograph", "detail": "high" },

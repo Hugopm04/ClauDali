@@ -92,6 +92,25 @@ def main() -> int:
             weight = entry.get("weight", 1.0)
             lines.append(f"| `{key}` | {prompt} | {weight} |")
 
+    lines.append("\n## Subject word lists\n")
+    lines.append("Plain lists, not keys. They decide whether a subject description")
+    lines.append("contains a body, and whether it asks for more than one thing. Nothing")
+    lines.append("here edits a prompt: they gate a framing warning, and whether an")
+    lines.append("intent's implicit `anatomy` negatives are inherited. Both are keyword")
+    lines.append("tests, so both are wrong sometimes — **add a word to")
+    lines.append("`claudali/vocabulary/subjects.yaml` when a subject of yours is")
+    lines.append("misjudged**, no code change needed.\n")
+    lines.append("| List | Entries | Used for |")
+    lines.append("|---|---|---|")
+    for name, purpose in [
+        ("person_words", "has a face and hands, fantasy humanoids included"),
+        ("person_suffixes", "matched as suffixes, for the occupation tail"),
+        ("plural_words", "means more than one, so one body cannot frame it"),
+    ]:
+        entries = vocab.get(name, [])
+        if entries:
+            lines.append(f"| `{name}` | {len(entries)} | {purpose} |")
+
     palettes = vocab.get("palettes", {})
     lines.append("\n## Palette colours\n")
     lines.append("Used by `post.palette_lock` and available as explicit hex in")

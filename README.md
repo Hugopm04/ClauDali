@@ -42,6 +42,14 @@ weave)1.15`, with matching negatives, ordered so the fragments that matter land
 in the tokens CLIP weighs most heavily. Every compiled prompt is returned in
 full, so nothing is hidden and any field can be overridden with raw text.
 
+It also counts. CLIP reads 75 tokens at a time and a longer prompt becomes
+several, each one voting in cross-attention — so a subject named only at the
+start is outvoted by chunk after chunk of setting and style, and quietly
+disappears from the image. ClauDali measures the prompt with CLIP's own
+tokenizer and restates the subject at the head of every chunk, which is the
+difference between a forest with fairies in it and an empty forest. See
+[docs/scene-spec.md](docs/scene-spec.md) on `subject.anchor`.
+
 ## What it does that a prompt cannot
 
 | Capability | Why it matters |
@@ -221,6 +229,7 @@ decide where things are; the model decides what they look like.
 
 | File | Shows |
 |---|---|
+| [`forest-fairies.json`](examples/forest-fairies.json) | A small subject in a long prompt: `subject.anchor` and scene framing |
 | [`surreal-lighthouse.json`](examples/surreal-lighthouse.json) | Painterly render with a procedural depth map |
 | [`product-photo.json`](examples/product-photo.json) | Photorealism with full camera control |
 | [`game-texture.json`](examples/game-texture.json) | Seamless tiling texture |
@@ -278,7 +287,8 @@ Environment variables, all optional:
 | `CLAUDALI_OFFLOAD` | `model` | `model`, `sequential` (less VRAM, slower) or `none` |
 | `CLAUDALI_DTYPE` | `float16` | `float32` uses more VRAM but avoids fp16 issues entirely |
 | `CLAUDALI_FP16_VAE_FIX` | `1` | Use the fp16-safe VAE. Required on GTX 16-series cards |
-| `CLAUDALI_VAE_UPCAST` | `auto` | Decode in fp32. `auto` measures the card, `always` and `never` decide outright |
+| `CLAUDALI_CUDNN` | `auto` | `auto` disables cuDNN if its fp16 convolutions return NaNs; `on` and `off` decide outright |
+| `CLAUDALI_VAE_UPCAST` | `auto` | Decode the VAE in fp32. `auto` only fires if the fault survives `CLAUDALI_CUDNN`; `always` and `never` decide outright |
 | `CLAUDALI_PREVIEW_MAX_SIDE` | `512` | Preview size in the bundle |
 | `CLAUDALI_MODELS_DIR` | `./models` | Move weights to another drive |
 | `CLAUDALI_OUTPUTS_DIR` | `./outputs` | Where bundles are written |
@@ -311,16 +321,21 @@ and the space it will reclaim first.
 
 ## Troubleshooting
 
-**Every image comes out solid black.** The VAE decoded to NaNs. Two unrelated
-fp16 faults on GTX 16-series cards cause this, and the diagnostics flag the
-symptom by name either way. The first is the stock VAE's numerics, which
-`sdxl-vae-fp16-fix` prevents; ClauDali installs and uses it by default. The
-second is a cuDNN fault where a narrowing fp16 convolution returns NaNs, which
-the fix VAE does not prevent and in fact exposes. Run `python -m claudali
-doctor`: if `fp16_narrowing_conv_broken` is true, ClauDali already decodes in
-fp32 to work around it, and `CLAUDALI_VAE_UPCAST=always` forces that on a card
-the probe cannot measure. `CLAUDALI_DTYPE=float32` avoids both at the cost of
-speed and VRAM.
+**Every image comes out solid black.** Something upstream produced NaNs. Two
+unrelated fp16 faults on GTX 16-series cards cause this, and the diagnostics
+flag the symptom by name either way. The first is the stock VAE's numerics,
+which `sdxl-vae-fp16-fix` prevents; ClauDali installs and uses it by default.
+The second is a cuDNN fault where some fp16 convolutions return NaNs, in the
+UNet and the VAE alike, which the fix VAE does not prevent. Run `python -m
+claudali doctor`: if `fp16_conv_broken` is true and `cudnn_disabled` is also
+true, ClauDali has already worked around it, and this render is black for some
+other reason. If `cudnn_disabled` is false, force it with `CLAUDALI_CUDNN=off`.
+If cuDNN is off and images are still black, add `CLAUDALI_VAE_UPCAST=always`.
+`CLAUDALI_DTYPE=float32` avoids all of them at the cost of speed and VRAM.
+
+Which shapes the cuDNN fault hits is unpredictable, so a working render at one
+size is no guarantee at another: on the machine this was measured on, 1024×1024
+is clean and 1344×768 is not.
 
 **Out of memory.** Try `CLAUDALI_OFFLOAD=sequential`, or render at a smaller
 aspect bucket. Close other GPU applications — a browser with hardware

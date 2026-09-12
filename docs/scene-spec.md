@@ -43,9 +43,40 @@ step count, medium, lighting and negatives — see
 | `secondary` | string[] | Supporting elements |
 | `count` | int 1–99 | Prefixed to the subject (`"3 lighthouses"`) |
 | `action` | string | What the subject is doing |
+| `anchor` | string | Two to four words naming the subject alone; restated in every CLIP chunk |
 
 `primary` carries a small attention weight bump. It is the one thing the image
 must not lose.
+
+### `subject.anchor`, and why long prompts lose their subject
+
+SDXL's text encoders read 75 tokens of content at a time. A longer prompt is not
+truncated — compel encodes each chunk and concatenates the embeddings — but
+cross-attention is then a softmax over the whole concatenated sequence, so every
+chunk votes. A subject named only in the first chunk is outvoted by all the
+later ones, and the later ones describe a setting with nothing in it.
+
+That is not hypothetical. A spec reading *"a photorealistic ancient forest with
+multiple small ethereal fairies"* compiled to 306 tokens. The word "fairies"
+appeared at tokens 46, 58 and 73, all inside the first chunk. The other four
+chunks were rainforest, god rays, a 50mm lens, bokeh and a green palette. All
+four rendered variations were beautiful, empty forests.
+
+So the compiler now restates the subject at the head of every chunk after the
+first. `anchor` is what it restates. Leave it unset and `primary` is used, which
+works but usually drags the setting along with it: restating *"ancient forest
+with fairies"* reinforces the forest as hard as the fairies, and the forest was
+already winning. Two or three words naming the subject alone is the point.
+
+The compiled result reports what happened, so none of this is guesswork:
+
+| Field | Meaning |
+|---|---|
+| `tokens.tokens` | Content tokens in the positive prompt |
+| `tokens.chunks` | How many 77-token windows that occupies |
+| `tokens.exact` | `true` when CLIP's own tokenizer counted it |
+| `tokens.source` | `clip-tokenizer`, or `estimate` when no model is installed |
+| `anchors` | The anchor text, once per chunk it was inserted into |
 
 ## `scene`
 
@@ -81,6 +112,20 @@ must not lose.
 Combining an aperture with a non-optical medium (a woodcut has no f-stop) is
 kept as requested but produces a warning.
 
+**Some shot keys crop a body, and that is a trap on any other subject.**
+`medium` expands to *"medium shot, subject from the waist up"*. A forest has no
+waist, so SDXL resolves the instruction against whatever is nearest and returns
+a macro shot of undergrowth — which is exactly how a forest-with-fairies spec
+came back as four pictures of moss. `close_up` is *"head and shoulders filling
+the frame"*, which is equally wrong for a coffee cup.
+
+Use `scene`, `tableau`, `group` or `tight` for a subject without a body, or
+`wide` and `extreme_wide` to place one in its surroundings. The compiler warns
+when a body-framing key meets a subject that names nobody, and when a
+single-body key meets a subject that asks for several. Both checks read word
+lists in `claudali/vocabulary/subjects.yaml`, so both are occasionally wrong and
+neither changes the prompt. Add a word to that file when yours is misjudged.
+
 ## `lighting`
 
 | Field | Type | Notes |
@@ -105,6 +150,7 @@ kept as requested but produces a warning.
 | `rule` | enum | — | `thirds`, `centered`, `golden_spiral`, `symmetry`, `diagonal` |
 | `horizon` | float 0–1 | — | **y coordinate**: 0 is the top edge |
 | `layers` | Layer[] | `[]` | The layer stack — see below |
+| `regional` | object | off | Per-region conditioning from the layer stack — see below |
 
 `horizon` catches people out. It is a position, not a proportion: `0.62` puts the
 horizon low in the frame, so the *sky* dominates.
@@ -115,13 +161,24 @@ The layer stack is what turns composition from a request into a constraint. Each
 layer contributes a shape at a known depth; `control.mode` then renders the stack
 into a map that ControlNet enforces.
 
+**Layer geometry does nothing on its own.** Nothing in the prompt compiler reads
+a bbox, so with `control.mode: "none"` the *shapes* have no effect on the image.
+The compiler says so in `warnings` rather than letting it pass.
+
+A layer's `prompt` is different, and used to be worse: it was read by nothing at
+all and vanished without a warning. It now becomes positional words in the
+prompt — a layer at `bbox: [0.05, 0.1, 0.3, 0.5]` with `depth: 0.8` compiles to
+`"three tiny fairies, in the left third, in the foreground"`. That costs nothing
+at render time and SDXL follows it weakly; expect it to land about half the
+time. `composition.regional` is the version that enforces it.
+
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `role` | string, required | — | Label, e.g. `"lighthouse"`. Also keys the region masks |
 | `shape` | enum | `"rect"` | `rect`, `ellipse`, `horizon`, `column`, `blob`, `line` |
 | `bbox` | float[4] | `[.25,.25,.75,.75]` | `[x0, y0, x1, y1]` normalised, `x0 < x1` |
 | `depth` | float 0–1 | `0.5` | 0 far, 1 near the camera |
-| `prompt` | string | — | Per-region description (reserved) |
+| `prompt` | string | — | Per-region description; positional words, or masked attention |
 
 Shapes are not equivalent. `column` shades across x only, so it reads as a
 cylinder. `ellipse` gets a dome falloff, so it reads as volume rather than a flat
@@ -137,6 +194,33 @@ its seed derives from its `role`. `horizon` is a flat distant band.
 ```
 
 Preview the result before rendering with `POST /api/control-preview`.
+
+### `composition.regional` — masked per-region conditioning
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | Apply each layer's `prompt` as masked cross-attention |
+| `strength` | float 0–1 | `0.8` | How fully a region's conditioning replaces the global one |
+| `feather` | int 0–256 | `24` | Mask edge feather in pixels, to avoid hard seams |
+
+With this on, a layer's `prompt` is encoded separately and applied only inside
+that layer's mask, instead of becoming positional words in the text prompt. It
+patches the UNet's cross-attention processors, blending each region's attention
+output into the global one by mask.
+
+**This path is untested on real hardware.** It is opt-in for that reason. If the
+patch cannot be installed the render proceeds with the global prompt alone and
+says so in the result's notes, so it degrades rather than fails. Compare a
+render against `enabled: false` before trusting it.
+
+It is deliberately not a `control.mode`. ControlNet conditions *geometry*
+through a side network while this decides *which text applies where*; they act
+at different points in the UNet, so the two can be combined. That combination
+has never been run either.
+
+Cost should be well under one extra render per region, because cross-attention
+is a small share of the UNet's work next to self-attention and the convolution
+stacks. Nobody has timed it.
 
 ## `control`
 
