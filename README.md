@@ -278,6 +278,7 @@ Environment variables, all optional:
 | `CLAUDALI_OFFLOAD` | `model` | `model`, `sequential` (less VRAM, slower) or `none` |
 | `CLAUDALI_DTYPE` | `float16` | `float32` uses more VRAM but avoids fp16 issues entirely |
 | `CLAUDALI_FP16_VAE_FIX` | `1` | Use the fp16-safe VAE. Required on GTX 16-series cards |
+| `CLAUDALI_VAE_UPCAST` | `auto` | Decode in fp32. `auto` measures the card, `always` and `never` decide outright |
 | `CLAUDALI_PREVIEW_MAX_SIDE` | `512` | Preview size in the bundle |
 | `CLAUDALI_MODELS_DIR` | `./models` | Move weights to another drive |
 | `CLAUDALI_OUTPUTS_DIR` | `./outputs` | Where bundles are written |
@@ -310,10 +311,16 @@ and the space it will reclaim first.
 
 ## Troubleshooting
 
-**Every image comes out solid black.** This is the classic fp16 VAE failure on
-GTX 16-series cards. ClauDali installs and uses `sdxl-vae-fp16-fix` to prevent
-it, and the diagnostics flag it by name if it happens anyway. Check the VAE is
-installed with `python -m claudali doctor`, or set `CLAUDALI_DTYPE=float32`.
+**Every image comes out solid black.** The VAE decoded to NaNs. Two unrelated
+fp16 faults on GTX 16-series cards cause this, and the diagnostics flag the
+symptom by name either way. The first is the stock VAE's numerics, which
+`sdxl-vae-fp16-fix` prevents; ClauDali installs and uses it by default. The
+second is a cuDNN fault where a narrowing fp16 convolution returns NaNs, which
+the fix VAE does not prevent and in fact exposes. Run `python -m claudali
+doctor`: if `fp16_narrowing_conv_broken` is true, ClauDali already decodes in
+fp32 to work around it, and `CLAUDALI_VAE_UPCAST=always` forces that on a card
+the probe cannot measure. `CLAUDALI_DTYPE=float32` avoids both at the cost of
+speed and VRAM.
 
 **Out of memory.** Try `CLAUDALI_OFFLOAD=sequential`, or render at a smaller
 aspect bucket. Close other GPU applications — a browser with hardware

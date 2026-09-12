@@ -71,19 +71,16 @@ def _encode_prompts(loaded: Any, compiled: CompiledPrompt) -> tuple[dict[str, An
             notes,
         )
     try:
-        conditioning, pooled = loaded.compel(compiled.prompt)
-        negative_conditioning, negative_pooled = loaded.compel(compiled.negative_prompt)
-        # SDXL requires positive and negative embeddings to be the same length;
-        # compel pads them rather than truncating, which is why long prompts work.
-        conditioning, negative_conditioning = loaded.compel.pad_conditioning_tensors_to_same_length(
-            [conditioning, negative_conditioning]
-        )
+        # Both prompts go in together: SDXL requires the positive and negative
+        # embeddings to be the same length, and the wrapper pads them rather than
+        # truncating, which is why prompts longer than 77 tokens work at all.
+        conditioning = loaded.compel(compiled.prompt, negative_prompt=compiled.negative_prompt)
         return (
             {
-                "prompt_embeds": conditioning,
-                "pooled_prompt_embeds": pooled,
-                "negative_prompt_embeds": negative_conditioning,
-                "negative_pooled_prompt_embeds": negative_pooled,
+                "prompt_embeds": conditioning.embeds,
+                "pooled_prompt_embeds": conditioning.pooled_embeds,
+                "negative_prompt_embeds": conditioning.negative_embeds,
+                "negative_pooled_prompt_embeds": conditioning.negative_pooled_embeds,
             },
             notes,
         )

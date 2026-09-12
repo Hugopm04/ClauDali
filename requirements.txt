@@ -30,5 +30,7 @@ accelerate>=0.30
 safetensors>=0.4
 
 # Prompt attention weights. Without compel, "(phrase)1.15" reaches CLIP as
-# literal parentheses and the weight does nothing at all.
-compel>=2.0.2
+# literal parentheses and the weight does nothing at all. 2.4 is the floor
+# because SDXL needs CompelForSDXL: the bare Compel class cannot pad a positive
+# and negative prompt of different lengths when there are two text encoders.
+compel>=2.4

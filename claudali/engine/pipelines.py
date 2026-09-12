@@ -8,6 +8,12 @@ Everything awkward about running SDXL on a 6 GB consumer card lives here:
 * **The GTX 16-series VAE bug.** Turing GTX cards produce NaNs in the stock fp16
   VAE, and every image decodes to solid black. ClauDali swaps in the fp16-fix
   VAE by default, which is the standard remedy.
+* **The cuDNN narrowing-convolution fault.** On some driver and cuDNN builds a
+  fp16 3x3 convolution whose output is narrower than its input returns NaNs for
+  a quarter of its values. The VAE decoder ends in exactly such a convolution,
+  so this also turns every image black -- and the fp16-fix VAE makes it *more*
+  likely, because that VAE declares it does not need upcasting. The card is
+  measured once and the VAE decodes in fp32 when it is affected.
 * **One resident pipeline.** Loading SDXL from disk costs 30-60 s. Pipelines for
   other tasks are derived with ``from_pipe``, which reuses the weights already
   in memory instead of reading them again.
@@ -18,7 +24,8 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from functools import lru_cache
+from typing import Any, Callable, Optional
 
 from ..config import SETTINGS
 from ..registry import get as get_model
@@ -88,7 +95,83 @@ def device_report() -> dict[str, Any]:
         # Turing GTX cards (7.5, no tensor cores) are the ones that need the
         # fp16 VAE fix. Reporting it makes a black-image bug self-diagnosing.
         report["needs_fp16_vae_fix"] = properties.major == 7 and "GTX" in properties.name
+        report["cudnn"] = torch.backends.cudnn.version()
+        report["fp16_narrowing_conv_broken"] = fp16_narrowing_conv_is_broken()
+        report["vae_upcast"] = SETTINGS.vae_upcast
     return report
+
+
+@lru_cache(maxsize=1)
+def fp16_narrowing_conv_is_broken() -> bool:
+    """Does this card return NaNs from a narrowing fp16 convolution?
+
+    Measured rather than inferred from the card's name. On a GTX 1660 Ti with
+    driver 591.86 and cuDNN 9.1, ``conv2d`` in fp16 with a 3x3 kernel, 256 input
+    channels and 128 output channels returns NaN for exactly a quarter of its
+    output, from finite inputs and finite weights. Widening convolutions, 1x1
+    kernels, fp32 and images under 256px are all unaffected, so a generic "is
+    this a Turing GTX card" test would both over- and under-fire.
+
+    The probe costs about 50 MB of VRAM and runs once per process. A failure to
+    run it at all is reported as *not* broken: an unavailable measurement must
+    not silently switch the renderer into its slower path.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if not torch.cuda.is_available():
+        return False
+    try:
+        generator = torch.Generator(device="cuda").manual_seed(0)
+        activations = torch.randn(1, 256, 256, 256, device="cuda", dtype=torch.float16,
+                                  generator=generator) * 4
+        weights = torch.randn(128, 256, 3, 3, device="cuda", dtype=torch.float16,
+                              generator=generator) * 0.02
+        with torch.no_grad():
+            result = F.conv2d(activations, weights, padding=1)
+        torch.cuda.synchronize()
+        return bool(torch.isnan(result).any())
+    except Exception as exc:  # noqa: BLE001 - a probe must never break a render
+        logger.warning("fp16 convolution probe failed (%s); assuming the card is sound", exc)
+        return False
+    finally:
+        torch.cuda.empty_cache()
+
+
+def _should_upcast_vae(mode: str, is_fp16: bool, probe: Callable[[], bool]) -> bool:
+    """Decide whether the VAE must decode in fp32. Pure, so it is testable.
+
+    ``probe`` is only called for ``auto``, which keeps the GPU measurement out
+    of the two modes that have already made the decision.
+    """
+    if not is_fp16 or mode == "never":
+        return False
+    if mode == "always":
+        return True
+    return probe()
+
+
+def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str]]:
+    """Work out the VAE's decode precision before any weights are loaded."""
+    import torch
+
+    notes: list[str] = []
+    mode = SETTINGS.vae_upcast
+    if mode not in {"auto", "always", "never"}:
+        notes.append(
+            f"unknown CLAUDALI_VAE_UPCAST '{mode}'; expected auto, always or never. "
+            "Falling back to auto."
+        )
+        mode = "auto"
+
+    upcast = _should_upcast_vae(mode, torch_dtype is torch.float16, fp16_narrowing_conv_is_broken)
+    if upcast and mode == "auto":
+        notes.append(
+            "this card returns NaNs from narrowing fp16 convolutions, which decodes "
+            "every image to solid black; the VAE will decode in fp32 instead. Renders "
+            "are a little slower. Set CLAUDALI_VAE_UPCAST=never to override."
+        )
+    return upcast, notes
 
 
 def _build_scheduler(pipe: Any, sampler: str) -> list[str]:
@@ -204,24 +287,78 @@ def _enable_vae_memory_savers(pipe: Any) -> list[str]:
     return notes
 
 
+def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
+    """Route the decode through fp32 when the card cannot be trusted in fp16.
+
+    This sets ``force_upcast``, which is diffusers' own switch: the pipeline
+    then casts the VAE to fp32 for the decode and back afterwards. Doing it that
+    way rather than casting the module here keeps img2img and inpainting, which
+    share these weights through ``from_pipe``, covered by the same flag.
+    """
+    notes: list[str] = []
+    if not upcast:
+        return notes
+
+    config = getattr(getattr(pipe, "vae", None), "config", None)
+    if config is None:
+        notes.append(
+            "this card needs fp32 VAE decoding but the pipeline exposes no VAE config; "
+            "images may decode to solid black. Set CLAUDALI_DTYPE=float32 to be safe."
+        )
+        return notes
+
+    config.force_upcast = True
+    return notes
+
+
+def _execution_device(pipe: Any) -> Any:
+    """The device this pipeline's components run on, offload hooks included."""
+    import torch
+
+    device = getattr(pipe, "_execution_device", None)
+    if isinstance(device, torch.device):
+        return device
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
     """Set up compel so ``(phrase)1.15`` attention weights actually take effect.
 
     Without compel, weight syntax is passed to CLIP as literal punctuation --
     the parentheses become tokens and the number does nothing. If compel cannot
     be constructed, the caller is told rather than silently losing every weight.
+
+    ``CompelForSDXL`` is the wrapper compel expects to be used for two text
+    encoders. Driving the bare ``Compel`` class with a list of encoders still
+    works but its padding helper does not: it reaches for an attribute the
+    multi-encoder provider has never had, so any prompt whose positive and
+    negative differ in token length fails. The wrapper pads them itself.
+
+    Construction has to happen with the text encoders on the execution device.
+    Each provider captures the device of the encoder it was handed, once, at
+    construction. Under CPU offload the encoders are parked on the CPU at that
+    moment, so every provider records ``cpu`` and builds its token ids there,
+    while the offload hook has moved the weights to the GPU by the time they are
+    used. The mismatch raises at ``index_select`` and silently costs every
+    attention weight -- the ``device`` argument alone does not fix it, because it
+    is not passed down to the providers. Moving the encoders first, and back
+    afterwards, is what makes them record the GPU. The 1.6 GB this needs is not
+    left sitting on a 6 GB card: the encoders go straight back to where they were.
     """
     notes: list[str] = []
     try:
-        from compel import Compel, ReturnedEmbeddingsType
+        from compel import CompelForSDXL
 
-        compel = Compel(
-            tokenizer=[pipe.tokenizer, pipe.tokenizer_2],
-            text_encoder=[pipe.text_encoder, pipe.text_encoder_2],
-            returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
-            requires_pooled=[False, True],
-            truncate_long_prompts=False,
-        )
+        encoders = [pipe.text_encoder, pipe.text_encoder_2]
+        device = _execution_device(pipe)
+        origins = [encoder.device for encoder in encoders]
+        try:
+            for encoder in encoders:
+                encoder.to(device)
+            compel = CompelForSDXL(pipe, device=str(device))
+        finally:
+            for encoder, origin in zip(encoders, origins):
+                encoder.to(origin)
         return compel, notes
     except Exception as exc:  # noqa: BLE001 - compel failure must not be fatal
         notes.append(
@@ -266,6 +403,11 @@ def load_pipeline(
         notes: list[str] = []
         torch_dtype = SETTINGS.torch_dtype
         path, layout = resolve_checkpoint(model_id)
+
+        # Probe the card before any weights are resident: the measurement needs
+        # its own VRAM, and with offload disabled there is none to spare later.
+        upcast_vae, upcast_notes = _plan_vae_precision(torch_dtype)
+        notes.extend(upcast_notes)
 
         vae, vae_notes = _load_vae(torch_dtype)
         notes.extend(vae_notes)
@@ -314,6 +456,7 @@ def load_pipeline(
 
         notes.extend(_build_scheduler(pipe, sampler))
         notes.extend(_apply_memory_strategy(pipe))
+        notes.extend(_apply_vae_precision(pipe, upcast_vae))
         pipe.set_progress_bar_config(disable=True)
 
         compel, compel_notes = _build_compel(pipe)

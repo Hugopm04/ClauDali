@@ -79,7 +79,7 @@ Then read `result.json` for what the preview hides.
 
 | Signal | What it means | Likely fix |
 |---|---|---|
-| `flags` contains the black-frame message | The fp16 VAE failed | Check `sdxl-vae-fp16-fix` is installed, or set `CLAUDALI_DTYPE=float32` |
+| `flags` contains the black-frame message | The VAE decoded to NaNs | Run `claudali doctor`: if `fp16_narrowing_conv_broken`, set `CLAUDALI_VAE_UPCAST=always`, else check `sdxl-vae-fp16-fix` is installed |
 | `exposure.dynamic_range` < 25 | Flat, muddy image | Raise `steps`, or `palette.contrast: "high"` |
 | `exposure.highlight_clip_pct` > 8 | Blown highlights | Lower `render.cfg` by 1–2 |
 | `detail.laplacian_variance` much lower than siblings | That variation is soft | Prefer a sharper seed; or `camera.focus: "tack_sharp"` |

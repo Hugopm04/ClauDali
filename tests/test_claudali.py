@@ -21,6 +21,7 @@ from claudali.compiler import compile_spec, load_vocabulary
 from claudali.compose import apply_overlays, apply_postprocess, quantize_to_palette
 from claudali.control.maps import build_depth_map, build_edge_map, build_region_masks
 from claudali.diagnostics import analyse
+from claudali.engine.pipelines import _should_upcast_vae
 from claudali.spec import ASPECT_BUCKETS, Overlay, Postprocess, SceneSpec, load_spec
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -304,3 +305,32 @@ def test_composition_balance_finds_an_off_centre_subject():
     balance = analyse(Image.fromarray(array, mode="RGB"))["composition"]
     assert balance["center_x"] < 0.5 and balance["center_y"] > 0.5
     assert balance["quadrants"]["bottom_left"] > 50
+
+
+# ---------------------------------------------------------------------------
+# Engine decisions that need no GPU
+# ---------------------------------------------------------------------------
+
+
+def test_vae_upcast_auto_follows_the_measurement():
+    """A regression lock: a GTX 1660 Ti renders solid black without this."""
+    assert _should_upcast_vae("auto", is_fp16=True, probe=lambda: True) is True
+    assert _should_upcast_vae("auto", is_fp16=True, probe=lambda: False) is False
+
+
+def test_vae_upcast_modes_skip_the_measurement():
+    """'always' and 'never' have already decided, so the probe must not run."""
+
+    def probe():
+        raise AssertionError("the card must not be measured once the mode decides")
+
+    assert _should_upcast_vae("always", is_fp16=True, probe=probe) is True
+    assert _should_upcast_vae("never", is_fp16=True, probe=probe) is False
+
+
+def test_vae_upcast_is_pointless_outside_fp16():
+    def probe():
+        raise AssertionError("fp32 cannot hit an fp16 fault")
+
+    assert _should_upcast_vae("auto", is_fp16=False, probe=probe) is False
+    assert _should_upcast_vae("always", is_fp16=False, probe=probe) is False

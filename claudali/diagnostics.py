@@ -153,18 +153,21 @@ def composition_balance(rgb: np.ndarray) -> dict[str, Any]:
 def failure_flags(rgb: np.ndarray, exposure: dict[str, Any]) -> list[str]:
     """Detect known, specific failure modes rather than judging taste.
 
-    The black-frame check earns its place on this hardware: GTX 16-series cards
-    emit NaNs from the stock fp16 VAE and every image decodes to solid black.
-    Without this flag that failure looks like a mysteriously bad render; with
-    it, the cause names itself.
+    The black-frame check earns its place on this hardware: two separate fp16
+    faults on GTX 16-series cards make every image decode to solid black, one in
+    the stock VAE's numerics and one in cuDNN's narrowing convolutions. Without
+    this flag that failure looks like a mysteriously bad render; with it, the
+    cause names itself.
     """
     flags: list[str] = []
 
     if exposure["mean"] < 2.0 and exposure["std"] < 1.5:
         flags.append(
-            "image is essentially solid black: this is the classic fp16 VAE failure on "
-            "GTX 16-series cards. Ensure sdxl-vae-fp16-fix is installed, or set "
-            "CLAUDALI_DTYPE=float32."
+            "image is essentially solid black: the VAE decoded to NaNs, which on "
+            "GTX 16-series cards means either the fp16 VAE or a cuDNN fp16 fault. "
+            "Run 'claudali doctor' and check fp16_narrowing_conv_broken; if it is "
+            "true set CLAUDALI_VAE_UPCAST=always, otherwise ensure sdxl-vae-fp16-fix "
+            "is installed. CLAUDALI_DTYPE=float32 avoids both."
         )
     elif exposure["mean"] > 253 and exposure["std"] < 1.5:
         flags.append("image is essentially solid white: the sampler likely diverged")

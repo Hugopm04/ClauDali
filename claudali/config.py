@@ -93,6 +93,13 @@ class Settings:
     # black images. The fp16-fix VAE is the standard remedy and costs 335 MB.
     fp16_vae_fix: bool = _env_bool("CLAUDALI_FP16_VAE_FIX", True)
 
+    # Some cuDNN builds return NaNs from a narrowing fp16 convolution, which is
+    # the shape the VAE decoder ends on -- also a fully black image, and one the
+    # fp16-fix VAE does not prevent. "auto" measures the card once per process
+    # and decodes in fp32 only if it is affected; "always" and "never" skip the
+    # measurement and decide outright.
+    vae_upcast: str = os.environ.get("CLAUDALI_VAE_UPCAST", "auto")  # auto|always|never
+
     # Keep the last-used pipeline resident. Reloading SDXL from disk costs
     # 30-60 s, so this matters far more than the VRAM it holds.
     keep_pipeline_warm: bool = _env_bool("CLAUDALI_KEEP_WARM", True)

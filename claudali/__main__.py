@@ -117,7 +117,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         from .engine.pipelines import device_report
 
         for key, value in device_report().items():
-            print(f"  {key:20s} {value}")
+            print(f"  {key:26s} {value}")
     except Exception as exc:  # noqa: BLE001
         print(f"  unavailable: {type(exc).__name__}: {exc}")
 

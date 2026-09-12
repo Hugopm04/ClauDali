@@ -30,6 +30,18 @@ consequences shaped the architecture, and none of them are negotiable:
    VAE and every image decodes to solid black. `sdxl-vae-fp16-fix` is installed
    as a *required* model and swapped in automatically. `diagnostics.failure_flags`
    detects the symptom by name, so if it ever regresses it is self-diagnosing.
+4. **The cuDNN narrowing-convolution fault.** Measured on this machine with
+   driver 591.86 and cuDNN 9.1: a fp16 3×3 `conv2d` whose output has fewer
+   channels than its input returns NaN for exactly a quarter of its values, at
+   256px and above, from finite inputs and finite weights. 1×1 kernels, widening
+   convolutions and fp32 are all clean, and so is the UNet, which never works
+   above 128px in latent space. The VAE decoder's last block is 256→128 at full
+   resolution, so **every image decodes black** — and `sdxl-vae-fp16-fix` makes
+   it worse, not better, because that VAE sets `force_upcast=False` and so keeps
+   the decode in fp16. `pipelines.fp16_narrowing_conv_is_broken()` measures the
+   card once per process and `CLAUDALI_VAE_UPCAST=auto` turns the decode to fp32
+   when it fires. Do not replace the measurement with a check on the card's name:
+   the fault is a driver and cuDNN combination, not a model of GPU.
 
 Do not "optimise" any of these away without checking `claudali doctor` output on
 the actual machine.
@@ -188,6 +200,17 @@ are all non-destructive and safe to run any time.
   passed to CLIP as literal parentheses and a number — the weight does nothing
   and the punctuation costs tokens. If compel fails to construct, the render
   proceeds but a note says the weights were ignored. Do not remove that note.
+- **compel needs `CompelForSDXL`, built with the encoders on the GPU.** Two
+  separate traps, both of which silently cost every attention weight. The bare
+  `Compel` class accepts a list of two encoders but its padding helper reads an
+  `empty_z` attribute the multi-encoder provider does not have, so any prompt
+  whose positive and negative differ in token length raises. And each provider
+  captures its encoder's device **once, at construction**: under CPU offload the
+  encoders are on the CPU at that moment, so the provider builds token ids there
+  while the offload hook has already moved the weights to the GPU, and the call
+  dies at `index_select`. Passing `device=` does not help, because it is not
+  forwarded to the providers. `_build_compel` moves the encoders to the execution
+  device, constructs, and moves them back.
 - **`from_pipe` shares weights.** img2img and inpainting derive from the loaded
   txt2img pipeline at no extra disk, download or load cost. This is why SDXL base
   can inpaint without a dedicated inpainting checkpoint.
