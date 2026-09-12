@@ -17,7 +17,7 @@ that make it marginally prettier.
 
 ## The hardware this was built for
 
-The target machine has a **GTX 1660 Ti, 6 GB VRAM, Turing sm_75**. Three
+The target machine has a **GTX 1660 Ti, 6 GB VRAM, Turing sm_75**. Four
 consequences shaped the architecture, and none of them are negotiable:
 
 1. **No tensor cores.** fp16 buys memory headroom, not speed. Expect ~2–4
@@ -157,7 +157,8 @@ a diffusers scheduler class name and its kwargs.
 
 Everything up to the sampler is deterministic and needs no weights, no CUDA and
 no network. `tests/test_claudali.py` covers the spec contract, the compiler,
-control maps, compositing, postprocessing and diagnostics — 34 tests, ~1.5 s.
+control maps, compositing, postprocessing, diagnostics and the engine's
+device decisions — 37 tests, ~1.4 s.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -165,8 +166,8 @@ control maps, compositing, postprocessing and diagnostics — 34 tests, ~1.5 s.
 
 Several tests are regression locks on bugs that actually happened: an explicit
 `steps: 30` being overwritten by the intent default, `horizon` being inverted,
-and the gradient `direction` being backwards. Do not delete them to make a
-change pass.
+the gradient `direction` being backwards, and `auto` VAE upcasting ignoring the
+measured card. Do not delete them to make a change pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:

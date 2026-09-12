@@ -209,11 +209,18 @@ Designed so a caller can learn the format without reading documentation.
     "torch": "2.4.0+cu124", "cuda_available": true,
     "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0,
     "compute_capability": "7.5", "needs_fp16_vae_fix": true,
+    "cudnn": 90100, "fp16_narrowing_conv_broken": true, "vae_upcast": "auto",
     "offload": "model", "dtype": "float16"
   },
   "queue": { "queued": 0, "running": 1, "done": 12, "error": 0, "worker_alive": true }
 }
 ```
+
+`fp16_narrowing_conv_broken` is measured on the card, not inferred from its name:
+it is true when a half-precision convolution that narrows its channel count
+returns NaNs, which decodes every image to solid black. When it is true and
+`vae_upcast` is `auto` or `always`, the VAE decodes in fp32 to work around it,
+which costs a few seconds per image.
 
 ---
 
