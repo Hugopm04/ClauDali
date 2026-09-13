@@ -19,7 +19,7 @@ from PIL import Image, ImageFilter
 from ..compiler import CompiledPrompt, compile_spec
 from ..control.maps import build_control_image, control_repo_for_mode
 from ..spec import SceneSpec
-from . import regional
+from . import quiet, regional
 from .pipelines import derive_pipeline, device_report, load_pipeline
 
 # Called as (step, total_steps, variation_index, total_variations).
@@ -75,7 +75,8 @@ def _encode_prompts(loaded: Any, compiled: CompiledPrompt) -> tuple[dict[str, An
         # Both prompts go in together: SDXL requires the positive and negative
         # embeddings to be the same length, and the wrapper pads them rather than
         # truncating, which is why prompts longer than 77 tokens work at all.
-        conditioning = loaded.compel(compiled.prompt, negative_prompt=compiled.negative_prompt)
+        with quiet.compel_tokenization():
+            conditioning = loaded.compel(compiled.prompt, negative_prompt=compiled.negative_prompt)
         return (
             {
                 "prompt_embeds": conditioning.embeds,

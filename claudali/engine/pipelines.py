@@ -32,8 +32,13 @@ from typing import Any, Callable, Optional
 from ..config import SETTINGS
 from ..registry import get as get_model
 from ..registry import resolve_checkpoint
+from . import quiet
 
 logger = logging.getLogger(__name__)
+
+# Before any diffusers import, which happens inside the functions below: one of
+# the silenced warnings is printed the moment diffusers imports its pipelines.
+quiet.install()
 
 # Scheduler keys exposed in the spec, mapped to diffusers classes and the
 # constructor kwargs that make them behave as the name promises.

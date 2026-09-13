@@ -10,7 +10,9 @@ Run with:  .venv\\Scripts\\python -m pytest -q
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,7 @@ from claudali.compiler import _assemble, compile_spec, load_vocabulary
 from claudali.compose import apply_overlays, apply_postprocess, quantize_to_palette
 from claudali.control.maps import build_depth_map, build_edge_map, build_region_masks
 from claudali.diagnostics import analyse
+from claudali.engine import quiet
 from claudali.engine.pipelines import _plan_cudnn, _should_upcast_vae
 from claudali.engine.regional import grid_for
 from claudali.spec import ASPECT_BUCKETS, Overlay, Postprocess, SceneSpec, load_spec
@@ -650,3 +653,86 @@ def test_region_grids_recover_the_latent_shape():
     # An unrecognisable length must be declined, not guessed: that block is then
     # left unmasked, which is weaker rather than wrong.
     assert grid_for(4095, 1344, 768) is None
+
+
+# ---------------------------------------------------------------------------
+# Silenced library warnings
+#
+# Three specific messages are dropped and everything else must still print.
+# The texts below are copied from the lines that emit them.
+# ---------------------------------------------------------------------------
+
+
+class _Collect(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@contextlib.contextmanager
+def emitted_by(name: str):
+    """What one named logger lets through, collected on that logger itself.
+
+    Not caplog: transformers can switch propagation off on its loggers once any
+    test has imported it, and a filter is only proven by a handler it guards.
+    """
+    logger = logging.getLogger(name)
+    handler, level = _Collect(), logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+
+
+def test_the_empty_float32_list_is_silenced_but_a_real_one_is_not():
+    quiet.install()
+    quiet.install()  # idempotent: a second install must not stack filters
+    name = "diffusers.models.modeling_utils"
+    template = (
+        "There are modules in UNet2DConditionModel that should be kept in float32: {}. "
+        "Casting directly with `to()` can lead to inconsistent results; set `torch_dtype` "
+        "in `from_pretrained()` instead to keep these modules in float32."
+    )
+    with emitted_by(name) as messages:
+        logging.getLogger(name).warning(template.format([]))
+        logging.getLogger(name).warning(template.format(["norm_out"]))
+    assert messages == [template.format(["norm_out"])]
+    assert len(logging.getLogger(name).filters) == 1
+
+
+def test_the_siglip_rename_is_silenced_and_nothing_else_on_that_logger():
+    quiet.install()
+    name = "transformers.utils.import_utils"
+    with emitted_by(name) as messages:
+        logging.getLogger(name).warning(
+            "`Siglip2ImageProcessorFast` is deprecated. The `Fast` suffix for image processors "
+            "has been removed; use `Siglip2ImageProcessor` instead."
+        )
+        logging.getLogger(name).warning("`OtherThingFast` is deprecated.")
+    assert messages == ["`OtherThingFast` is deprecated."]
+
+
+def test_the_long_sequence_warning_is_silenced_only_while_compel_encodes():
+    """Outside compel the same message is true, so it must still print there."""
+    name = "transformers.tokenization_utils_base"
+    text = (
+        "Token indices sequence length is longer than the specified maximum sequence length "
+        "for this model (131 > 77). Running this sequence through the model will result in "
+        "indexing errors"
+    )
+    logger = logging.getLogger(name)
+    with emitted_by(name) as messages:
+        logger.warning(text)
+        with quiet.compel_tokenization():
+            with quiet.compel_tokenization():  # re-entrant
+                logger.warning(text)
+            logger.warning(text)
+        logger.warning(text)
+    assert messages == [text, text]
+    assert logger.filters == []

@@ -55,6 +55,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from ..compiler import CompiledPrompt
 from ..spec import SceneSpec
+from . import quiet
 
 
 @dataclass
@@ -131,7 +132,8 @@ def _encode(loaded: Any, pipe: Any, text: str, negative: str) -> Any:
     import torch
 
     if loaded.compel is not None:
-        conditioning = loaded.compel(text, negative_prompt=negative)
+        with quiet.compel_tokenization():
+            conditioning = loaded.compel(text, negative_prompt=negative)
         return torch.cat([conditioning.negative_embeds, conditioning.embeds], dim=0)
 
     positive, negative_embeds, _, _ = pipe.encode_prompt(

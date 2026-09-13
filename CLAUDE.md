@@ -3,6 +3,13 @@
 Orientation for future Claude sessions in this repo. Read this before changing
 anything; it records decisions whose reasons are not visible in the code.
 
+## Open work
+
+`PLAN.md` is an agreed plan (2026-09-13) for four tasks: silence three library
+warnings, exact pause/resume, a cleanup pass, and optional max-quality stages.
+Every decision in it was made with Hugo, so do not re-ask them. Read it before
+starting any of that work, and keep its status table current.
+
 ## What this is
 
 ClauDali gives a language model a way to produce images. The model writes a
@@ -86,6 +93,8 @@ claudali/
                   numpy + Pillow only, no model loading.
   registry.py     Model catalogue; resolves file lists from the HF tree API.
   engine/
+    quiet.py      Silences three specific, harmless library warnings by text
+                  match on their loggers. Stdlib only.
     pipelines.py  Loads, configures and caches diffusers pipelines. All the
                   VRAM and fp16 handling lives here.
     render.py     Runs the sampler. Chooses txt2img / img2img / inpaint.
@@ -295,6 +304,13 @@ are all non-destructive and safe to run any time.
   rule: a suffix rule generous enough to catch "-ist" also makes people out of
   "mist" and "water".
 
+- **Three library warnings are silenced on purpose, and only those three.**
+  diffusers' empty "kept in float32: []" list, transformers' `Siglip2ImageProcessorFast`
+  rename, and the tokenizer's "longer than the specified maximum (131 > 77)",
+  the last only while compel encodes. `engine/quiet.py` explains why each is
+  false here. They are matched by message text on the one logger that emits
+  each. Do not widen that to logger levels: that would also hide the next real
+  warning those libraries print.
 - **The HF tree API lists redundant weights.** SDXL repos ship both a diffusers
   folder layout *and* single-file convenience copies at the repo root. Taking
   everything made sdxl-base a 21 GB download instead of 7.14 GB. The fix is
