@@ -1,0 +1,11 @@
+{
+  "name": "refiner on",
+  "notes": "Manual test. SDXL base with the refiner taking over at 80% of the schedule. Identical to refiner-off.json except for refiner.enabled. Needs `python -m installer models --add sdxl-refiner`. Never run on hardware.",
+  "intent": "photoreal",
+  "subject": { "primary": "an elderly fisherman mending a net on a wooden pier", "anchor": "elderly fisherman" },
+  "scene": { "time": "overcast morning", "background": "grey harbour water" },
+  "camera": { "shot": "medium", "lens": "85mm" },
+  "composition": { "aspect": "1:1" },
+  "render": { "model": "sdxl-base", "steps": 30, "seed": 99, "vae_decode": "gpu_tiled" },
+  "refiner": { "enabled": true, "handoff": 0.8 }
+}

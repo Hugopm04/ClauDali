@@ -63,7 +63,9 @@ class ModelEntry:
     """One downloadable model."""
 
     id: str
-    kind: Literal["checkpoint", "vae", "controlnet", "lora"]
+    # "refiner" and "upscaler" are kinds of their own so that nothing offers them
+    # as a base model: the UI's model list shows only "checkpoint".
+    kind: Literal["checkpoint", "vae", "controlnet", "lora", "refiner", "upscaler"]
     repo: str
     layout: Literal["diffusers", "single_file"]
     description: str
@@ -188,10 +190,41 @@ CATALOG: dict[str, ModelEntry] = {
             tags=["painterly", "surreal", "concept"],
             homepage="https://huggingface.co/Lykon/dreamshaper-xl-1-0",
         ),
+        ModelEntry(
+            id="sdxl-refiner",
+            kind="refiner",
+            repo="stabilityai/stable-diffusion-xl-refiner-1.0",
+            layout="diffusers",
+            description=(
+                "SDXL 1.0 refiner. Finishes the last part of the denoising after the base "
+                "model, when refiner.enabled is set or render.quality is 'max'. Optional."
+            ),
+            approx_gb=6.25,
+            license="CreativeML Open RAIL++-M",
+            tags=["quality", "refiner"],
+            homepage="https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0",
+        ),
+        ModelEntry(
+            id="realesrgan-x4",
+            kind="upscaler",
+            repo="Comfy-Org/Real-ESRGAN_repackaged",
+            layout="single_file",
+            single_file="RealESRGAN_x4plus.safetensors",
+            description=(
+                "Real-ESRGAN x4plus, a 4x photo upscaler for the hi-res pass "
+                "(hires.upscaler 'realesrgan-x4'). Needs the spandrel package. Optional."
+            ),
+            approx_gb=0.07,
+            license="BSD-3-Clause",
+            tags=["quality", "upscaler"],
+            homepage="https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged",
+        ),
     ]
 }
 
 # Named install profiles, so the installer can offer a size rather than a list.
+# Each is spelled out: `full` used to be `list(CATALOG)`, which would have grown
+# silently with every entry added, the optional quality models included.
 PROFILES: dict[str, list[str]] = {
     "minimal": ["sdxl-base", "sdxl-vae-fp16-fix"],
     "standard": [
@@ -200,12 +233,27 @@ PROFILES: dict[str, list[str]] = {
         "controlnet-depth-sdxl",
         "controlnet-canny-sdxl",
     ],
-    "full": list(CATALOG),
+    "full": [
+        "sdxl-base",
+        "sdxl-vae-fp16-fix",
+        "controlnet-depth-sdxl",
+        "controlnet-canny-sdxl",
+        "juggernaut-xl",
+        "dreamshaper-xl",
+    ],
 }
+
+# Downloaded only when asked for (`installer install --with-quality-models`), on
+# top of any profile. Used by refiner.enabled, hires.upscaler and render.quality.
+QUALITY_MODELS: list[str] = ["sdxl-refiner", "realesrgan-x4"]
 
 
 def profile_size_gb(profile: str) -> float:
     return round(sum(CATALOG[model_id].approx_gb for model_id in PROFILES[profile]), 1)
+
+
+def quality_models_size_gb() -> float:
+    return round(sum(CATALOG[model_id].approx_gb for model_id in QUALITY_MODELS), 1)
 
 
 def get(model_id: str) -> ModelEntry:
@@ -236,6 +284,11 @@ def resolve_checkpoint(model_id: str) -> tuple[Path, str]:
     """
     if model_id in CATALOG:
         entry = get(model_id)
+        if entry.kind != "checkpoint":
+            raise ValueError(
+                f"'{model_id}' is a {entry.kind}, not a base checkpoint, so it cannot be "
+                "render.model. The refiner is turned on with refiner.enabled."
+            )
         if not entry.is_installed():
             raise FileNotFoundError(
                 f"model '{model_id}' is not installed. Run: python -m installer models --add {model_id}"
@@ -251,6 +304,42 @@ def resolve_checkpoint(model_id: str) -> tuple[Path, str]:
 
     known = sorted(CATALOG) + [p.stem for p in custom_checkpoints()]
     raise FileNotFoundError(f"unknown model '{model_id}'. Available: {', '.join(known)}")
+
+
+def refiner_problem(model_id: str) -> Optional[str]:
+    """Why ``model_id`` cannot serve as the refiner right now, or None when it can.
+
+    Shared by the compiler, which warns, and the renderer, which refuses: both
+    must agree on what "not available" means.
+    """
+    entry = CATALOG.get(model_id)
+    if entry is None or entry.kind != "refiner":
+        refiners = ", ".join(e.id for e in CATALOG.values() if e.kind == "refiner")
+        return f"'{model_id}' is not a refiner in the catalogue (refiners: {refiners})"
+    if not entry.is_installed():
+        return (
+            f"the refiner '{model_id}' is not installed. Install it with: "
+            f"python -m installer models --add {model_id}"
+        )
+    return None
+
+
+def upscaler_problem(model_id: str = "realesrgan-x4") -> Optional[str]:
+    """Why the Real-ESRGAN upscaler cannot run right now, or None when it can. No imports."""
+    import importlib.util
+
+    entry = CATALOG[model_id]
+    if not entry.is_installed():
+        return (
+            f"the upscaler '{model_id}' is not installed. Install it with: "
+            f"python -m installer models --add {model_id}"
+        )
+    if importlib.util.find_spec("spandrel") is None:
+        return (
+            "the spandrel package that runs it is not installed. Re-run the installer, or: "
+            ".venv\\Scripts\\python -m pip install spandrel"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +440,16 @@ def download_url(entry: ModelEntry, path: str) -> str:
 __all__ = [
     "CATALOG",
     "PROFILES",
+    "QUALITY_MODELS",
     "ModelEntry",
     "RemoteFile",
     "custom_checkpoints",
     "download_url",
     "get",
     "profile_size_gb",
+    "quality_models_size_gb",
+    "refiner_problem",
     "resolve_checkpoint",
     "resolve_remote_files",
+    "upscaler_problem",
 ]

@@ -1,0 +1,7 @@
+{
+  "name": "fp32 small",
+  "notes": "Manual test. fp32 precision at a small size and 4 steps, to measure what it costs before trying it at full size: RAM while loading, seconds per step under sequential offload. Identical to fp16-small.json except for render.precision.",
+  "intent": "photoreal",
+  "subject": { "primary": "a red apple on a wooden table", "anchor": "red apple" },
+  "render": { "model": "sdxl-base", "width": 768, "height": 768, "steps": 4, "seed": 7, "precision": "fp32", "vae_decode": "cpu" }
+}

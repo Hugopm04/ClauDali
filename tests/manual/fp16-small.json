@@ -1,0 +1,7 @@
+{
+  "name": "fp16 small",
+  "notes": "Manual test. The fp16 baseline for fp32-small.json: the same spec, seed and steps at the default precision.",
+  "intent": "photoreal",
+  "subject": { "primary": "a red apple on a wooden table", "anchor": "red apple" },
+  "render": { "model": "sdxl-base", "width": 768, "height": 768, "steps": 4, "seed": 7, "precision": "fp16", "vae_decode": "cpu" }
+}

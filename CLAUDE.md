@@ -3,13 +3,6 @@
 Orientation for future Claude sessions in this repo. Read this before changing
 anything; it records decisions whose reasons are not visible in the code.
 
-## Open work
-
-`PLAN.md` is an agreed plan (2026-09-13) for four tasks: silence three library
-warnings, exact pause/resume, a cleanup pass, and optional max-quality stages.
-Every decision in it was made with Hugo, so do not re-ask them. Read it before
-starting any of that work, and keep its status table current.
-
 ## What this is
 
 ClauDali gives a language model a way to produce images. The model writes a
@@ -24,8 +17,9 @@ that make it marginally prettier.
 
 ## The hardware this was built for
 
-The target machine has a **GTX 1660 Ti, 6 GB VRAM, Turing sm_75**. Four
-consequences shaped the architecture, and none of them are negotiable:
+The target machine has a **GTX 1660 Ti, 6 GB VRAM, Turing sm_75**, in a laptop
+with 16.6 GB of RAM of which other programs hold ~9 GB. Five consequences
+shaped the architecture, and none of them are negotiable:
 
 1. **No tensor cores.** fp16 buys memory headroom, not speed. Measured on this
    laptop: ~13–14 minutes per 1344×768 image at 32 steps (23–26 s per step),
@@ -72,6 +66,36 @@ consequences shaped the architecture, and none of them are negotiable:
    replace the measurement with a check on the card's name, and do not trim the
    probe table down to one shape — a single-shape probe is exactly what let this
    fault through the first time. It passed at 1024×1024 and failed at 1344×768.
+5. **The VAE decode is where quality and memory trade.** With cuDNN off, GPU
+   convolutions go through im2col: the column buffer for one 3×3 convolution at
+   1344×768 is 4.75 GB in fp16 and 9.5 GB in fp32. Measured decodes of one
+   1344×768 image:
+
+   | Decode | Time | Memory |
+   |---|---|---|
+   | GPU fp16, tiled, fp16-fix VAE | 25.5 s | 1.76 GB VRAM |
+   | GPU fp16, untiled | 18.2 s | 6.39 GB, over the card; shared memory absorbed it |
+   | GPU fp32, untiled | out of memory | wanted 8.86 GiB |
+   | CPU fp32, untiled, checkpoint VAE | 29.0 s | ~5.8 GB of RAM |
+
+   Tiling blends overlapping tiles with per-tile GroupNorm statistics, and on the
+   GPU it applies to every SDXL size: diffusers tiles above the VAE's
+   `sample_size`, 512 px for the fp16-fix VAE (1024 px for SDXL base's own).
+   So `engine/decode.py`'s `auto` prefers the untiled CPU decode, and RAM decides:
+   a loaded pipeline leaves 0.1–1.8 GB free here. Measured 2026-09-13 with SDXL
+   base loaded: `auto` at 768×768 saw 0.1 GB free and fell back to the GPU;
+   forced `cpu` completed at 768×768 with 1.1 GB free, paging, no NaN. On this
+   laptop `auto` falls back almost every time, and `cpu` is the way to get the
+   untiled decode. `auto` as the default was agreed with Hugo; do not change it
+   without asking.
+
+   The CPU decode also buys a better decoder. On a 768×768 crop of a real
+   render, in fp32 on the CPU, SDXL base's own VAE round-tripped at 50.2 dB PSNR
+   and the fp16-fix VAE the GPU path uses at 43.6 dB. The cost can come later
+   than the decode, though: after a forced CPU decode short of RAM, the next
+   render in the same process waited ~2.5 minutes for its first step and ran a
+   768×768 step in 90 s instead of ~12 s, most likely paging the offloaded
+   weights back in.
 
 Do not "optimise" any of these away without checking `claudali doctor` output on
 the actual machine.
@@ -84,6 +108,8 @@ Dependencies point downward. Nothing below imports anything above it.
 claudali/
   config.py       Paths and settings. Redirects HF_HOME into models/ AT IMPORT
                   TIME -- must stay import-safe and stdlib-only.
+  sysinfo.py      Free and total RAM, via ctypes on Windows and /proc on Linux.
+                  None when unmeasurable. Stdlib only.
   spec.py         The SceneSpec pydantic models. The contract. extra="forbid".
   tokens.py       Counts CLIP tokens and packs a prompt into 75-token chunks.
                   Lazy tokenizer, fitted fallback. Stdlib at import time.
@@ -93,16 +119,23 @@ claudali/
   control/maps.py Procedural depth/edge/region maps from composition.layers.
                   numpy + Pillow only, no model loading.
   registry.py     Model catalogue; resolves file lists from the HF tree API.
+                  Says why the optional refiner or upscaler cannot run.
   engine/
     quiet.py      Silences three specific, harmless library warnings by text
                   match on their loggers. Stdlib only.
     checkpoint.py Pause and exact resume: the controller, resume state,
-                  checkpoint files, fingerprint, and the two pipeline hooks.
-                  Stdlib at import time.
-    pipelines.py  Loads, configures and caches diffusers pipelines. All the
-                  VRAM and fp16 handling lives here.
-    render.py     Runs the sampler one variation at a time (denoise) and
-                  decodes (decode_latents). Chooses txt2img / img2img / inpaint.
+                  checkpoint files (with the latents waiting between stages),
+                  fingerprint, and the two pipeline hooks. Stdlib at import time.
+    pipelines.py  Loads, configures and caches diffusers pipelines -- the base,
+                  the refiner, and the checkpoint's own VAE for CPU decoding.
+                  All the VRAM, precision and offload handling lives here.
+    decode.py     The VAE decode policy (auto/cpu/gpu/gpu_tiled) and the
+                  decode and encode that follow it. Stdlib at import time.
+    upscale.py    Lanczos, or Real-ESRGAN through spandrel (imported lazily),
+                  before the hi-res pass.
+    render.py     Runs each variation through its stages -- base, then the
+                  optional refiner and hi-res pass -- batched by model.
+                  denoise() runs one stage. Chooses txt2img / img2img / inpaint.
     regional.py   Opt-in masked cross-attention for per-layer prompts.
                   UNTESTED on hardware; falls back loudly.
   diagnostics.py  Measurements over a finished image. Reports, never enforces.
@@ -137,12 +170,17 @@ SceneSpec
    |
    |-- compiler.compile_spec ------> CompiledPrompt (prompt, negatives, model,
    |                                  steps, cfg, sampler, size, token count,
-   |                                  chunk anchors, regions, warnings, notes)
+   |                                  chunk anchors, regions, warnings, notes,
+   |                                  precision, vae_decode, refiner, hires, stages)
    |-- control.maps.build_control_image -> depth / canny PNG   (optional)
    |
    v
-engine.render.render  ---> per variation: denoise -> latents -> decode_latents
-   |                        on_checkpoint(ResumeState) before each variation
+engine.render.render  ---> stages per variation: base [-> refiner] [-> hires]
+   |                        with a refiner: all bases, all refiners, all hires
+   |                        each stage: denoise -> latents, held between stages
+   |                        hires: decode -> upscale -> encode -> img2img
+   |                        last stage: decode.decode by the vae_decode plan
+   |                        on_checkpoint(ResumeState) before each stage
    |                        on_variation(RenderedImage) as each image lands
    |                        raises RenderPaused / RenderAborted when asked
    |                        returns RenderResult (images + seeds + warnings + notes + device)
@@ -205,7 +243,10 @@ python -c "from claudali import registry; e=registry.get('your-id'); \
 f=registry.resolve_remote_files(e); print(len(f), sum(x.size for x in f)/1e9, 'GB')"
 ```
 
-Update `approx_gb` to the measured value.
+Update `approx_gb` to the measured value. `PROFILES` and `QUALITY_MODELS` are
+explicit lists, so a new entry is in no profile until you add it to one. Only
+`kind="checkpoint"` is offered as a base model; the refiner and upscaler have
+kinds of their own for that reason.
 
 **Add a sampler** — one entry in `SAMPLERS` in `engine/pipelines.py`, mapping to
 a diffusers scheduler class name and its kwargs. A test builds every entry and
@@ -232,10 +273,17 @@ or three words naming the subject alone.
 Everything up to the sampler is deterministic and needs no weights, no CUDA and
 no network. `tests/test_claudali.py` covers the spec contract, the compiler,
 control maps, compositing, postprocessing, diagnostics, the engine's device
-decisions, the silenced warnings, and pause/resume: checkpoints, the queue, the
-bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU.
-87 tests, ~15 s warm and ~35 s cold. Importing diffusers for the tiny pipeline is
-most of it.
+decisions, the silenced warnings, pause/resume (checkpoints, the queue, the
+bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU),
+and the quality options: the decode and offload plans, the max preset, and
+render() itself taking tiny base and refiner pipelines through all three stages,
+paused in the refiner and resumed. 103 tests, ~15 s. Importing diffusers for the
+tiny pipelines is most of it.
+
+What needs the GPU and a person looking -- the web UI, decode quality, timings,
+the refiner, Real-ESRGAN, fp32 -- is a checklist in `tests/manual/README.md`,
+with its specs beside it. They are deliberately not in `examples/`: several
+warn by design, and every example must compile without warnings.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -250,8 +298,8 @@ token estimator reading 31% low, an occupation such as "alchemist" not counting
 as a person, a resume that re-ran every step instead of continuing, a torch
 import creeping into the server modules, a saved spec whose written-out defaults
 beat its intent when loaded back, a sampler inheriting the previous one's Karras
-sigmas, and `lms` needing a package nothing installs. Do not delete them to make
-a change pass.
+sigmas, `lms` needing a package nothing installs, and a staged resume re-running
+stages it had finished. Do not delete them to make a change pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:
@@ -377,13 +425,55 @@ are all non-destructive and safe to run any time.
   and counts UNet calls, since a resume that silently re-ran every step with
   the same seed would also match. If a diffusers upgrade breaks it, fix the
   hooks; do not loosen the test. The pipeline is called with
-  `output_type="latent"` and decoded by `render.decode_latents`, a
-  line-for-line mirror of the pipeline's own decode. That is what lets a render
-  paused after its last step, or handed to a later stage, need no second path.
+  `output_type="latent"` and decoded in `engine/decode.py`, whose GPU path
+  `decode_latents` is a line-for-line mirror of the pipeline's own decode. That
+  is what lets a render paused after its last step, or handed to a later stage,
+  need no second path. The same hooks work in img2img, which the refiner and
+  hi-res stages are: `test_a_render_paused_between_stages_resumes_bit_for_bit`
+  pauses inside the refiner stage of a tiny render and compares final pixels.
 - **A pause must never overwrite a step checkpoint with a boundary one.** `render`
-  calls `on_checkpoint` before each variation, which is what lets a killed
-  process resume. It skips that call for a variation resuming mid-image. A crash
-  during the resume then still resumes from the saved step, not from step 0.
+  calls `on_checkpoint` before each stage of each variation, which is what lets
+  a killed process resume. It skips that call for a stage resuming mid-image. A
+  crash during the resume then still resumes from the saved step, not from the
+  stage's first step.
+- **With a refiner, the stages are batched, and a phase must let go of the last
+  one's pipeline.** The refiner is a second 6 GB model and the cache has one slot:
+  every variation's base stage runs, the base is released, every refiner stage
+  runs, and the base is loaded again for the hi-res passes. The latents waiting
+  in between live on the CPU and in the checkpoint (`ResumeState.staged`, format
+  2). Releasing the cache slot frees nothing while `_Run` still references the
+  old pipeline, its derived pipelines or its embeddings, so `_acquire` clears
+  them before loading: miss one and two UNets share 16 GB of RAM. Without a
+  refiner there is one phase and each variation runs base then hi-res back to
+  back, so its image lands sooner. Because the waiting latents are on the CPU,
+  the GPU decode moves them to the VAE's device and dtype itself: diffusers'
+  offload hook on `vae.decode` moves the VAE, never its input, and the first
+  hardware check of the hi-res path failed on exactly that.
+  `test_latents_waiting_on_the_cpu_decode_on_the_gpu_path` locks it.
+- **`render.quality: "max"` resolves in the compiler, never in the spec.** A
+  validator that filled in precision or the refiner would mark them set, and a
+  spec saved with `exclude_unset` would come back with the preset spelled out
+  as explicit choices. `_resolve_quality` supplies what the spec leaves unset,
+  explicit fields win (`refiner.enabled: false` under `max` keeps the rest), and
+  the result is frozen in `CompiledPrompt`, so a resume keeps it. An explicit
+  refiner or Real-ESRGAN that cannot run is kept, so `render` refuses it; under
+  the preset it is left out with a warning.
+- **The checkpoint's own VAE is not SDXL base's VAE.** Juggernaut ships a VAE of
+  its own inside its single file: every tensor key matches SDXL's, but weights
+  differ by up to 55. Measured round-trip PSNR on a 512 px crop was 63.4 dB for
+  SDXL base's VAE and 49.8 dB for Juggernaut's, both clean. The CPU decode reads
+  just those tensors from the file through safetensors and diffusers' own
+  converter; loading the whole 7 GB file for them would not fit beside a loaded
+  pipeline. The GPU decode uses the fp16-fix VAE, which is SDXL base's.
+- **compel under sequential offload cannot move the encoders.** `_build_compel`
+  moves them to the GPU for construction (see the compel gotcha above), but
+  sequential offload leaves placeholder weights that cannot be moved, and fp32
+  on a small card selects sequential offload. There the encoders stay put and
+  compel is handed `device=` instead, which compel 2.4 does forward to each
+  provider. Unmeasured, like fp32 itself.
+- **A hi-res pass can round to zero steps.** img2img runs `int(steps *
+  strength)` steps, so `hires.steps: 2, strength: 0.3` is none, and diffusers
+  fails obscurely. The compiler warns and `render` refuses with the arithmetic.
 - **`from_pipe` shares weights.** img2img and inpainting derive from the loaded
   txt2img pipeline at no extra disk, download or load cost. This is why SDXL base
   can inpaint without a dedicated inpainting checkpoint.
@@ -434,6 +524,16 @@ Do not add these without a reason that survives the argument against them:
   through a side network while this decides which text applies where; they act
   at different points and can combine. Do not promote it to a default, and do
   not delete the fallback, until somebody renders with it and looks.
+- **The refiner, Real-ESRGAN and full-size hi-res are untested on hardware, and
+  fp32 is unmeasured.** None of the refiner or Real-ESRGAN weights were on the
+  machine when they were written, and a 2016×1152 hi-res pass or an fp32 load
+  did not fit the GPU test budget. The CPU stage-loop test locks the logic, not
+  the models. Keep them opt-in, and label them so until somebody renders with
+  them and looks.
+- **No refiner with init or inpainting, and no ControlNet after the base
+  stage.** The refiner with `init` raises. The refiner and hi-res stages run
+  uncontrolled, and a note says so: a hi-res ControlNet pass would need the
+  control image rebuilt at the new size, which is untested territory.
 - **`post.seamless` is a cross-fade heuristic**, good for organic textures and
   visibly wrong for anything structured. `post.transparent_bg` is a corner
   flood-fill, not segmentation. Both are documented as such; neither should be
@@ -442,11 +542,11 @@ Do not add these without a reason that survives the argument against them:
 ## Commands
 
 ```powershell
-.\install.ps1 [-ModelProfile minimal|standard|full] [-RecreateVenv] [-Cpu]
+.\install.ps1 [-ModelProfile minimal|standard|full] [-QualityModels] [-RecreateVenv] [-Cpu]
 .\scripts\start.ps1 [-BindHost 127.0.0.1] [-Port 8188] [-NoBrowser]
 .\uninstall.ps1 [-Models] [-Env] [-Outputs] [-All] [-DryRun]
 
-python -m installer install --profile standard
+python -m installer install --profile standard [--with-quality-models]
 python -m installer models --add juggernaut-xl
 python -m installer status
 

@@ -34,3 +34,8 @@ safetensors>=0.4
 # because SDXL needs CompelForSDXL: the bare Compel class cannot pad a positive
 # and negative prompt of different lengths when there are two text encoders.
 compel>=2.4
+
+# Runs the optional Real-ESRGAN upscaler before the hi-res pass (hires.upscaler
+# "realesrgan-x4"). Imported only when that upscaler runs; everything else works
+# without it. The model itself is an optional download: --with-quality-models.
+spandrel>=0.4

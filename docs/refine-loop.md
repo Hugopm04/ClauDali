@@ -167,6 +167,13 @@ whichever one is losing, not both.
 them, walk away, judge the contact sheet in one sitting. The queue is designed
 for throughput, not latency.
 
+**Explore at standard quality, finish at max.** The quality options (`render.
+quality: "max"`, the refiner, the hi-res pass, the forced CPU decode) multiply
+the time a render takes and change nothing about what the spec asks for. Judge
+composition and subject at standard quality; once a seed is worth keeping,
+render that one seed again with `max`. See the quality options in
+[scene-spec.md](scene-spec.md).
+
 **Pause rather than cancel.** Each variation is saved the moment it finishes, so
 a long batch can be judged while it runs. When you need the machine back, pause:
 Ctrl+C in the terminal, or Pause in the UI or the API. The render stops at the

@@ -1,0 +1,11 @@
+{
+  "name": "hires realesrgan",
+  "notes": "Manual test. hires-lanczos.json with the Real-ESRGAN x4 upscaler instead. Needs `python -m installer models --add realesrgan-x4` and the spandrel package. Never run on hardware.",
+  "intent": "photoreal",
+  "subject": { "primary": "an old brass pocket watch lying open on a weathered oak table", "anchor": "brass pocket watch" },
+  "scene": { "background": "soft window light, dust in the air" },
+  "camera": { "shot": "tight", "lens": "85mm", "focus": "shallow_dof" },
+  "composition": { "aspect": "16:9" },
+  "render": { "steps": 20, "seed": 314, "vae_decode": "gpu_tiled" },
+  "hires": { "enabled": true, "scale": 1.5, "strength": 0.3, "upscaler": "realesrgan-x4" }
+}

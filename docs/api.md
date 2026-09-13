@@ -70,6 +70,7 @@ Poll a job. Polling once every 1–2 seconds is plenty.
   "id": "9f2c1a...",
   "status": "running",
   "progress": 0.42,
+  "stage": "base",
   "step": 13,
   "total_steps": 32,
   "variation": 0,
@@ -77,6 +78,11 @@ Poll a job. Polling once every 1–2 seconds is plenty.
   "eta_s": 218.4
 }
 ```
+
+`stage` is `base`, `refiner` or `hires`, and `step` of `total_steps` counts that
+stage of that variation. `progress` covers every stage of every variation, with
+a hi-res step weighted by the pixels it samples. With a refiner the stages are
+batched, so `variation` goes round once per stage.
 
 `status` is `queued`, `running`, `pausing`, `paused`, `done`, `error` or
 `cancelled`. Once the job has started, the response also contains `bundle` —
@@ -119,7 +125,8 @@ queue, and releases the hold if this job caused it. When the worker picks it up
 it first checks that nothing which shapes the pixels has changed since the
 pause: the model's files, the torch, diffusers, transformers and compel
 versions, precision, cuDNN state, attention slicing, VAE settings, sampler,
-size, and the control and init images. If something has, the job ends in
+size, the refiner and hi-res settings and their model files, and the control
+and init images. If something has, the job ends in
 `error` with `"error_type": "resume_mismatch"` and a `mismatch` list naming each
 difference; its checkpoint is untouched. Resuming again with `"force": true`
 carries on anyway and records the differences in the bundle notes.
@@ -184,6 +191,8 @@ A finished job carries a `bundle`, which is also written to disk as
     "negative_tokens": { "tokens": 112, "chunks": 2, "exact": true, "source": "clip-tokenizer" },
     "anchors": ["a stoneware coffee cup", "a stoneware coffee cup", "a stoneware coffee cup"],
     "regions": [],
+    "quality": "standard", "precision": "float16", "vae_decode": "auto",
+    "refiner": null, "hires": null, "stages": ["base"],
     "warnings": [],
     "notes": []
   },
@@ -193,7 +202,11 @@ A finished job carries a `bundle`, which is also written to disk as
       "seed": 1848,
       "image": "...\\001_seed1848.png",
       "preview": "...\\001_seed1848.preview.jpg",
-      "diagnostics": { "...": "see below" }
+      "diagnostics": { "...": "see below" },
+      "decode": {
+        "mode": "auto", "device": "gpu", "precision": "float16", "tiled": true,
+        "need_gb": 5.1, "free_gb": 1.3
+      }
     }
   ],
   "contact_sheet": "...\\contact-sheet.jpg",
@@ -210,7 +223,14 @@ A finished job carries a `bundle`, which is also written to disk as
 ```
 
 `compiled.fragments` is the audit trail: every phrase in the prompt with the spec
-field it came from and the weight applied.
+field it came from and the weight applied. `compiled.precision`, `vae_decode`,
+`refiner`, `hires` and `stages` are the quality options as resolved from the
+spec, `render.quality` and the server's settings.
+
+Each variation's `decode` says where its final VAE decode ran: `mode` as
+compiled, the `device` and `precision` it used, whether it was `tiled`, and the
+RAM the decision was made on (`need_gb` estimated for an untiled CPU decode,
+`free_gb` measured, null when not measured).
 
 `spec` holds only the fields that were set, so submitting it again infers the
 same defaults from its intent; `compiled` holds every value the render used.
@@ -231,14 +251,17 @@ While a job can be resumed, `checkpoint` summarises where it will carry on:
 
 ```json
 {
-  "stage": "base", "variation": 1, "next_step": 13, "steps": 32,
-  "variations": 4, "completed": [0], "mid_image": true,
+  "stage": "base", "stages": ["base"], "variation": 1, "next_step": 13, "steps": 32,
+  "variations": 4, "completed": [0], "staged": [], "mid_image": true,
   "reason": "pause", "paused_at": "2026-09-13T10:22:41"
 }
 ```
 
-`variation` is zero-based. `mid_image` is false at a variation boundary, where
-the variation restarts from step 0 with its original seed, which is still exact.
+`variation` is zero-based. `stage` is the stage it will carry on in, out of the
+job's `stages`, and `steps` is that stage's step count. `staged` lists the
+variations waiting between stages, as `{"variation": 0, "stage": "base"}`; their
+latents are in `state.pt`. `mid_image` is false at a stage boundary, where that
+stage restarts from its first step with the original seed, which is still exact.
 `reason` is `pause`, `shutdown`, `abort`, or `running` for a process that died.
 
 ### Diagnostics
@@ -328,7 +351,23 @@ Designed so a caller can learn the format without reading documentation.
 | `GET /api/models` | Catalogue with installed state, disk usage, licences, profiles |
 | `GET /api/examples` | The bundled example specs |
 | `GET /api/health` | Device report, queue stats, active settings |
+| `GET /api/memory` | Free RAM now, and the numbers the VAE decode policy judges it by |
 | `GET /api/history?limit=30` | Previously written bundles, newest first |
+
+`GET /api/memory` needs no torch and is cheap to poll. The web UI uses it to say
+beside the VAE decode control what `auto` would do right now:
+
+```json
+{
+  "available_gb": 7.1, "total_gb": 16.6,
+  "vae_decode": { "default": "auto", "cpu_gb_per_megapixel": 5.6, "margin_gb": 1.0 },
+  "dtype": "float16"
+}
+```
+
+`auto` decodes on the CPU in fp32 without tiling when `available_gb` is at least
+`cpu_gb_per_megapixel × megapixels + margin_gb`. `available_gb` is null when the
+platform gives no reading, and `auto` then decodes on the GPU tiled.
 
 `GET /api/health` is the fastest way to explain a slow render:
 
@@ -341,7 +380,8 @@ Designed so a caller can learn the format without reading documentation.
     "compute_capability": "7.5", "needs_fp16_vae_fix": true,
     "cudnn": 90100, "fp16_conv_broken": true, "cudnn_disabled": true,
     "fp16_conv_broken_without_cudnn": false, "vae_upcast": "auto",
-    "offload": "model", "dtype": "float16"
+    "offload": "model", "dtype": "float16", "vae_decode": "auto",
+    "ram_total_gb": 16.6, "ram_available_gb": 7.1
   },
   "queue": {
     "queued": 0, "running": 1, "pausing": 0, "paused": 0, "done": 12, "error": 0,

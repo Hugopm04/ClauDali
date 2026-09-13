@@ -82,6 +82,7 @@ class Job:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
 
+    stage: str = "base"
     step: int = 0
     total_steps: int = 0
     variation: int = 0
@@ -100,7 +101,9 @@ class Job:
     controller: RenderController = field(default_factory=RenderController)
 
     _started_monotonic: Optional[float] = None
-    _steps_before_start: Optional[int] = None
+    # Work done and to do across every stage and variation, as the renderer counts it.
+    _done: float = 0.0
+    _total: float = 0.0
 
     @property
     def resumable(self) -> bool:
@@ -108,18 +111,19 @@ class Job:
 
     @property
     def progress(self) -> float:
-        """Overall completion across every variation, 0..1."""
+        """Overall completion across every stage of every variation, 0..1."""
         if self.status is JobStatus.DONE:
             return 1.0
-        total = max(1, self.total_steps * self.total_variations)
-        done = self.variation * self.total_steps + self.step
-        return min(1.0, done / total)
+        if self._total <= 0:
+            return 0.0
+        return min(1.0, self._done / self._total)
 
     def to_dict(self, include_bundle: bool = True) -> dict[str, Any]:
         data: dict[str, Any] = {
             "id": self.id,
             "status": self.status.value,
             "progress": round(self.progress, 4),
+            "stage": self.stage,
             "step": self.step,
             "total_steps": self.total_steps,
             "variation": self.variation,
@@ -536,7 +540,6 @@ class JobQueue:
         from .engine.render import render
 
         job._started_monotonic = time.monotonic()
-        job._steps_before_start = None
         job.eta_s = None
 
         resume = None
@@ -555,18 +558,17 @@ class JobQueue:
             job.total_variations = job.spec.render.variations
         job.bundle = writer.bundle
 
-        def progress(step: int, total: int, variation: int, variations: int) -> None:
-            job.step, job.total_steps = step, total
-            job.variation, job.total_variations = variation, variations
+        def progress(update: Any) -> None:
+            job.stage = update.stage
+            job.step, job.total_steps = update.step, update.steps
+            job.variation, job.total_variations = update.variation, update.variations
+            job._done, job._total = update.done, update.total
 
-            done = variation * total + step
-            if job._steps_before_start is None:
-                # A resumed job starts partway, and only the steps run in this
-                # session say how fast it is going.
-                job._steps_before_start = done - 1
-            ran = done - job._steps_before_start
+            # A resumed job starts partway, and only the work run in this session
+            # says how fast it is going.
+            ran = update.done - update.resumed_from
             elapsed = time.monotonic() - (job._started_monotonic or time.monotonic())
-            remaining = max(0, total * variations - done)
+            remaining = max(0.0, update.total - update.done)
             job.eta_s = elapsed / ran * remaining if ran > 0 else None
 
         try:

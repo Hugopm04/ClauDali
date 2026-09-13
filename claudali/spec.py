@@ -255,6 +255,28 @@ class Render(Base):
     seed: Optional[int] = Field(None, ge=0, le=2**32 - 1, description="None = random per variation.")
     variations: int = Field(1, ge=1, le=16, description="How many images to render.")
     clip_skip: Optional[int] = Field(None, ge=1, le=4)
+    quality: Literal["standard", "max"] = Field(
+        "standard",
+        description=(
+            "'max' turns on every quality option this spec does not set itself: fp32 "
+            "precision, a forced CPU fp32 untiled VAE decode, the refiner when installed, and "
+            "the hi-res pass. Very slow by design."
+        ),
+    )
+    precision: Optional[Literal["fp16", "fp32"]] = Field(
+        None,
+        description=(
+            "Model precision. Unset follows CLAUDALI_DTYPE (fp16). fp32 needs ~13-14 GB of "
+            "RAM and sequential offload on a small card; unmeasured."
+        ),
+    )
+    vae_decode: Optional[Literal["auto", "cpu", "gpu", "gpu_tiled"]] = Field(
+        None,
+        description=(
+            "Where the VAE decodes. auto: CPU fp32 untiled if free RAM allows, else GPU tiled. "
+            "cpu: CPU fp32 untiled, forced. Unset follows CLAUDALI_VAE_DECODE (auto)."
+        ),
+    )
 
     @field_validator("width", "height")
     @classmethod
@@ -262,6 +284,46 @@ class Render(Base):
         if value is not None and value % 8 != 0:
             raise ValueError("width and height must be multiples of 8")
         return value
+
+
+class Refiner(Base):
+    """The SDXL refiner as a second stage, handed the base model's latents partway.
+
+    The official "ensemble of experts" handoff: the base model denoises the first
+    ``handoff`` of the schedule and stops, the refiner -- trained on the low-noise
+    end -- finishes it. Every variation's base stage runs first, then the base
+    model is unloaded and the refiner runs, so only one UNet is in memory at a
+    time. **Untested on real hardware**; the refiner is an optional download.
+    """
+
+    enabled: bool = Field(False, description="Run the refiner stage. On under render.quality 'max'.")
+    model: str = Field("sdxl-refiner", description="Catalogue id of the refiner.")
+    handoff: float = Field(
+        0.8, gt=0.0, lt=1.0, description="Fraction of the schedule the base model runs first."
+    )
+    aesthetic_score: float = Field(6.0, ge=0.0, le=10.0)
+    negative_aesthetic_score: float = Field(2.5, ge=0.0, le=10.0)
+
+
+class Hires(Base):
+    """A hi-res pass: upscale the finished image, then re-sample it with img2img.
+
+    Adds real detail at the larger size, which an upscaler alone cannot. The
+    pass runs ``steps * strength`` sampler steps at ``scale`` squared the pixels,
+    so it is several times the cost of the steps it runs. Full-size hi-res on a
+    6 GB card is unmeasured.
+    """
+
+    enabled: bool = Field(False, description="Run the hi-res pass. On under render.quality 'max'.")
+    scale: float = Field(1.5, gt=1.0, le=2.0, description="Size multiplier, rounded to multiples of 8.")
+    upscaler: Literal["lanczos", "realesrgan-x4"] = Field(
+        "lanczos",
+        description="lanczos needs nothing; realesrgan-x4 needs its model and spandrel installed.",
+    )
+    strength: float = Field(0.3, gt=0.0, le=1.0, description="How far the pass departs from the upscale.")
+    steps: Optional[int] = Field(
+        None, ge=1, le=150, description="Schedule length; unset uses the compiled steps."
+    )
 
 
 class Negative(Base):
@@ -354,6 +416,8 @@ class SceneSpec(Base):
     control: Control = Field(default_factory=Control)
     init: Optional[InitImage] = None
     render: Render = Field(default_factory=Render)
+    refiner: Refiner = Field(default_factory=Refiner)
+    hires: Hires = Field(default_factory=Hires)
     negative: Negative = Field(default_factory=Negative)
     overlays: list[Overlay] = Field(default_factory=list)
     post: Postprocess = Field(default_factory=Postprocess)
@@ -428,6 +492,8 @@ __all__ = [
     "Control",
     "InitImage",
     "Render",
+    "Refiner",
+    "Hires",
     "Negative",
     "Overlay",
     "Postprocess",

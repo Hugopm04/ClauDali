@@ -1,0 +1,11 @@
+{
+  "name": "refiner off",
+  "notes": "Manual test. The baseline for refiner-on.json: the same spec, seed and steps with the refiner explicitly off.",
+  "intent": "photoreal",
+  "subject": { "primary": "an elderly fisherman mending a net on a wooden pier", "anchor": "elderly fisherman" },
+  "scene": { "time": "overcast morning", "background": "grey harbour water" },
+  "camera": { "shot": "medium", "lens": "85mm" },
+  "composition": { "aspect": "1:1" },
+  "render": { "model": "sdxl-base", "steps": 30, "seed": 99, "vae_decode": "gpu_tiled" },
+  "refiner": { "enabled": false }
+}

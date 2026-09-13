@@ -85,9 +85,14 @@ class Settings:
     # Memory strategy. On a 6 GB card model CPU offload is what makes SDXL fit
     # at all: components move to the GPU only while they are actually running.
     offload: str = os.environ.get("CLAUDALI_OFFLOAD", "model")  # model|sequential|none
-    dtype: str = os.environ.get("CLAUDALI_DTYPE", "float16")
+    dtype: str = os.environ.get("CLAUDALI_DTYPE", "float16")  # float16|bfloat16|float32
     attention_slicing: bool = _env_bool("CLAUDALI_ATTENTION_SLICING", True)
-    vae_tiling: bool = _env_bool("CLAUDALI_VAE_TILING", True)
+
+    # Where a finished image is decoded, for specs that do not set
+    # render.vae_decode. "auto" decodes on the CPU in fp32 without tiling when
+    # there is the free RAM for it, and on the GPU with tiling otherwise; "cpu",
+    # "gpu" and "gpu_tiled" decide outright. See engine/decode.py.
+    vae_decode: str = os.environ.get("CLAUDALI_VAE_DECODE", "auto")  # auto|cpu|gpu|gpu_tiled
 
     # GTX 16-series cards emit NaNs from the fp16 VAE, which surface as fully
     # black images. The fp16-fix VAE is the standard remedy and costs 335 MB.
@@ -108,14 +113,6 @@ class Settings:
     preview_max_side: int = _env_int("CLAUDALI_PREVIEW_MAX_SIDE", 512)
     max_queue: int = _env_int("CLAUDALI_MAX_QUEUE", 64)
     job_retention: int = _env_int("CLAUDALI_JOB_RETENTION", 200)
-
-    @property
-    def torch_dtype(self):  # pragma: no cover - trivial mapping
-        import torch
-
-        return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[
-            self.dtype
-        ]
 
 
 SETTINGS = Settings()

@@ -5,6 +5,11 @@ Everything awkward about running SDXL on a 6 GB consumer card lives here:
 * **Model CPU offload.** SDXL's UNet alone is ~5 GB in fp16. Offloading moves
   each component to the GPU only while it runs, which is what makes 1024px
   generation fit at all on a 6 GB card.
+* **Precision is per job.** fp16 by default; fp32 when a spec asks for it, or
+  under ``render.quality: "max"``. An fp32 UNet is ~10 GB, which no amount of
+  model offload fits on a small card, so fp32 switches such a card to
+  sequential offload. The pipeline cache is keyed by precision, so switching
+  reloads.
 * **The GTX 16-series VAE bug.** Turing GTX cards produce NaNs in the stock fp16
   VAE, and every image decodes to solid black. ClauDali swaps in the fp16-fix
   VAE by default, which is the standard remedy.
@@ -18,20 +23,24 @@ Everything awkward about running SDXL on a 6 GB consumer card lives here:
   sound. An fp32 VAE decode remains as a second line of defence.
 * **One resident pipeline.** Loading SDXL from disk costs 30-60 s. Pipelines for
   other tasks are derived with ``from_pipe``, which reuses the weights already
-  in memory instead of reading them again.
+  in memory instead of reading them again. The SDXL refiner is a second model
+  and takes the same single slot, so loading it unloads the base.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Iterator, Optional
 
 from ..config import SETTINGS
 from ..registry import get as get_model
 from ..registry import resolve_checkpoint
+from ..sysinfo import memory_gb
 from . import quiet
 
 logger = logging.getLogger(__name__)
@@ -61,13 +70,20 @@ SAMPLERS: dict[str, tuple[str, dict[str, Any]]] = {
     "ddim": ("DDIMScheduler", {}),
 }
 
+OFFLOAD_MODES = ("model", "sequential", "none")
+# Below this much VRAM fp32 SDXL does not fit under model offload: its UNet
+# alone is ~10 GB, and model offload holds a whole component on the GPU.
+FP32_MODEL_OFFLOAD_MIN_VRAM_GB = 12.0
+# The key prefixes diffusers' own single-file VAE converter looks for.
+_SINGLE_FILE_VAE_PREFIXES = ("first_stage_model.", "vae.")
+
 _LOCK = threading.Lock()
 _CACHE: "Optional[LoadedPipeline]" = None
 
 
 @dataclass
 class LoadedPipeline:
-    """A resident base pipeline and the identity of what it holds.
+    """A resident pipeline and the identity of what it holds.
 
     ``warnings`` and ``notes`` are what loading it had to say. They belong to the
     load, so every render that reuses the pipeline repeats them: compel being
@@ -82,18 +98,36 @@ class LoadedPipeline:
     compel: Any = None
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    kind: str = "base"  # "base" | "refiner"
+    precision: str = "float16"
+    offload: str = "model"
+    # Where the weights came from, to read the checkpoint's own VAE again for the CPU.
+    source: Optional[Path] = None
+    layout: str = "diffusers"
+    cpu_vae: Any = None  # that VAE in fp32 on the CPU, once something needed it
+
+
+def torch_dtype_for(precision: str) -> Any:
+    """The torch dtype for a precision name: float16, bfloat16 or float32."""
+    import torch
+
+    return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[precision]
 
 
 def device_report() -> dict[str, Any]:
     """What hardware ClauDali will actually use. Used by ``claudali doctor``."""
     import torch
 
+    memory = memory_gb()
     report: dict[str, Any] = {
         "torch": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "offload": SETTINGS.offload,
         "dtype": SETTINGS.dtype,
+        "vae_decode": SETTINGS.vae_decode,
+        "ram_total_gb": round(memory[1], 1) if memory else None,
+        "ram_available_gb": round(memory[0], 1) if memory else None,
     }
     if torch.cuda.is_available():
         properties = torch.cuda.get_device_properties(0)
@@ -228,9 +262,8 @@ def _plan_cudnn(
         warnings.append(
             "this machine returns NaN from some fp16 convolutions even with cuDNN "
             "disabled, so cuDNN is not the cause and has been left on. Images may "
-            "still come out solid black; CLAUDALI_DTYPE=float32 avoids fp16 "
-            "convolutions altogether, but its ~10 GB UNet does not fit a 6 GB card "
-            "under model offload."
+            "still come out solid black; render.precision 'fp32' avoids fp16 "
+            "convolutions altogether, at the cost of sequential offload on a small card."
         )
         return status(True, False, True)
 
@@ -253,6 +286,8 @@ def apply_cudnn_workaround() -> CudnnStatus:
     because the fault moves with the shape in ways no rule predicts. PyTorch
     then convolves through its own cuBLAS path, which on a card with no tensor
     cores is not slower -- measured at 0.93x of cuDNN over a real sampler step.
+    The probe measures fp16 shapes only; the process-wide switch it sets
+    applies to fp32 convolutions as well.
     """
     import torch
 
@@ -344,8 +379,6 @@ def _variant_for(local_dir: Any) -> Optional[str]:
     exists fails the load outright, so the variant is detected rather than
     assumed.
     """
-    from pathlib import Path
-
     directory = Path(local_dir)
     if not directory.is_dir():
         return None
@@ -354,8 +387,10 @@ def _variant_for(local_dir: Any) -> Optional[str]:
 
 def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
     """Load the fp16-safe VAE when it is installed and enabled. Returns ``(vae, warnings)``."""
+    import torch
+
     warnings: list[str] = []
-    if not SETTINGS.fp16_vae_fix or SETTINGS.dtype != "float16":
+    if not SETTINGS.fp16_vae_fix or torch_dtype is not torch.float16:
         return None, warnings
 
     entry = get_model("sdxl-vae-fp16-fix")
@@ -378,36 +413,70 @@ def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
     return vae, warnings
 
 
-def _apply_memory_strategy(pipe: Any) -> tuple[list[str], list[str]]:
-    """Configure offloading and slicing for the available VRAM. Returns ``(warnings, notes)``."""
+def _plan_offload(
+    setting: str, precision: str, vram_gb: Optional[float]
+) -> tuple[str, list[str], list[str]]:
+    """Choose the offload mode for a load. Pure, so it is testable.
+
+    Returns ``(mode, warnings, notes)``. fp32 on a card too small for model
+    offload switches to sequential offload, which is a decision taken on the
+    caller's behalf and so a note.
+    """
     warnings: list[str] = []
     notes: list[str] = []
+    if setting not in OFFLOAD_MODES:
+        warnings.append(
+            f"unknown CLAUDALI_OFFLOAD '{setting}'; expected model, sequential or none. Using model."
+        )
+        setting = "model"
+    if (
+        precision == "float32"
+        and setting != "sequential"
+        and vram_gb is not None
+        and vram_gb < FP32_MODEL_OFFLOAD_MIN_VRAM_GB
+    ):
+        notes.append(
+            f"fp32 weights do not fit this {vram_gb:.0f} GB card under {setting} offload, so "
+            "this load uses sequential CPU offload: each layer visits the GPU only while it "
+            "runs. It keeps ~13-14 GB of weights in RAM and is much slower; neither has been "
+            "measured on a 6 GB card."
+        )
+        return "sequential", warnings, notes
+    if setting == "sequential":
+        notes.append("sequential CPU offload: lowest VRAM, slowest")
+    elif setting == "none":
+        notes.append("no offload: the whole pipeline is resident in VRAM")
+    return setting, warnings, notes
+
+
+def _apply_memory_strategy(pipe: Any, precision: str) -> tuple[str, list[str], list[str]]:
+    """Configure offloading and slicing. Returns ``(offload mode, warnings, notes)``."""
     import torch
 
     if not torch.cuda.is_available():
-        warnings.append("CUDA is not available; rendering on CPU will take many minutes per image")
-        return warnings, notes
+        return "none", ["CUDA is not available; rendering on CPU will take many minutes per image"], []
 
-    if SETTINGS.offload == "sequential":
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    offload, warnings, notes = _plan_offload(SETTINGS.offload, precision, vram_gb)
+    if offload == "sequential":
         pipe.enable_sequential_cpu_offload()
-        notes.append("sequential CPU offload: lowest VRAM, slowest")
-    elif SETTINGS.offload == "model":
+    elif offload == "model":
         pipe.enable_model_cpu_offload()
     else:
         pipe.to("cuda")
-        notes.append("no offload: the whole pipeline is resident in VRAM")
 
     if SETTINGS.attention_slicing:
         pipe.enable_attention_slicing()
-    if SETTINGS.vae_tiling:
-        # Tiling decodes the latent in chunks. Without it, the VAE decode of a
-        # 1024px image is often the single largest VRAM spike in the run.
-        #
-        # These helpers moved from the pipeline onto the VAE itself (they are
-        # gone from the pipeline in diffusers 0.40), so try the current location
-        # first and fall back for older versions that requirements.txt allows.
-        warnings.extend(_enable_vae_memory_savers(pipe))
-    return warnings, notes
+    # Tiling is left on by default for the encodes the img2img and inpainting
+    # pipelines run themselves, where an untiled pass is the largest VRAM spike
+    # in the run. ClauDali's own decodes and hi-res encodes set tiling per image
+    # (engine/decode.py) and put it back afterwards.
+    #
+    # These helpers moved from the pipeline onto the VAE itself (they are gone
+    # from the pipeline in diffusers 0.40), so try the current location first and
+    # fall back for older versions that requirements.txt allows.
+    warnings.extend(_enable_vae_memory_savers(pipe))
+    return offload, warnings, notes
 
 
 def _enable_vae_memory_savers(pipe: Any) -> list[str]:
@@ -456,8 +525,8 @@ def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
     if config is None:
         warnings.append(
             "this card needs fp32 VAE decoding but the pipeline exposes no VAE config; "
-            "images may decode to solid black. CLAUDALI_DTYPE=float32 avoids that, but "
-            "its ~10 GB UNet does not fit a 6 GB card under model offload."
+            "images may decode to solid black. render.vae_decode 'cpu' decodes in fp32 "
+            "on the CPU instead."
         )
         return warnings
 
@@ -469,7 +538,7 @@ def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
     return warnings
 
 
-def _execution_device(pipe: Any) -> Any:
+def execution_device(pipe: Any) -> Any:
     """The device this pipeline's components run on, offload hooks included."""
     import torch
 
@@ -479,7 +548,43 @@ def _execution_device(pipe: Any) -> Any:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
+def free_offload_hooks(pipe: Any) -> None:
+    """Park every component back on the CPU after a call that did not finish.
+
+    A pipeline only does this at the end of a completed call. Raising out of the
+    loop leaves the UNet on the GPU, and the next job's text encoders would then
+    be loaded next to it on a card with no room for both.
+    """
+    free = getattr(pipe, "maybe_free_model_hooks", None)
+    if callable(free):
+        try:
+            free()
+        except Exception:  # noqa: BLE001 - cleanup must not mask the real exception
+            pass
+
+
+@contextlib.contextmanager
+def _encoders_on(encoders: list[Any], device: Any, offload: str) -> Iterator[None]:
+    """Hold text encoders on ``device`` while compel is constructed. See :func:`_build_compel`.
+
+    Under sequential offload the weights are placeholders that the hooks fill in
+    layer by layer and cannot be moved, so there the encoders stay put and the
+    ``device`` handed to compel is what counts.
+    """
+    if offload == "sequential":
+        yield
+        return
+    origins = [encoder.device for encoder in encoders]
+    try:
+        for encoder in encoders:
+            encoder.to(device)
+        yield
+    finally:
+        for encoder, origin in zip(encoders, origins):
+            encoder.to(origin)
+
+
+def _build_compel(pipe: Any, offload: str) -> tuple[Any, list[str]]:
     """Set up compel so ``(phrase)1.15`` attention weights actually take effect.
 
     Without compel, weight syntax is passed to CLIP as literal punctuation --
@@ -498,25 +603,20 @@ def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
     moment, so every provider records ``cpu`` and builds its token ids there,
     while the offload hook has moved the weights to the GPU by the time they are
     used. The mismatch raises at ``index_select`` and silently costs every
-    attention weight -- the ``device`` argument alone does not fix it, because it
-    is not passed down to the providers. Moving the encoders first, and back
-    afterwards, is what makes them record the GPU. The 1.6 GB this needs is not
-    left sitting on a 6 GB card: the encoders go straight back to where they were.
+    attention weight. Moving the encoders first, and back afterwards, is what
+    was verified on the GPU under model offload; the 1.6 GB this needs is not
+    left sitting on a 6 GB card. Under sequential offload the encoders cannot
+    move, and the explicit ``device`` is relied on instead: compel 2.4 does pass
+    it down to each provider (``embeddings_provider.py``, line 76). That case is
+    unmeasured.
     """
     warnings: list[str] = []
     try:
         from compel import CompelForSDXL
 
-        encoders = [pipe.text_encoder, pipe.text_encoder_2]
-        device = _execution_device(pipe)
-        origins = [encoder.device for encoder in encoders]
-        try:
-            for encoder in encoders:
-                encoder.to(device)
+        device = execution_device(pipe)
+        with _encoders_on([pipe.text_encoder, pipe.text_encoder_2], device, offload):
             compel = CompelForSDXL(pipe, device=str(device))
-        finally:
-            for encoder, origin in zip(encoders, origins):
-                encoder.to(origin)
         return compel, warnings
     except Exception as exc:  # noqa: BLE001 - compel failure must not be fatal
         warnings.append(
@@ -526,46 +626,115 @@ def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
         return None, warnings
 
 
-def load_pipeline(model_id: str, controlnet_id: Optional[str] = None) -> LoadedPipeline:
+def _build_refiner_compel(pipe: Any, offload: str) -> tuple[Any, list[str]]:
+    """compel for the refiner, which has only SDXL's second text encoder.
+
+    ``CompelForSDXL`` expects both encoders, so this is a single-encoder
+    ``Compel`` set up the way that wrapper sets up its second half: penultimate
+    hidden states, pooled output, no truncation. The encoder is held on the
+    execution device during construction for the reason in :func:`_build_compel`.
+    """
+    warnings: list[str] = []
+    try:
+        from compel import Compel, ReturnedEmbeddingsType
+
+        device = execution_device(pipe)
+        with _encoders_on([pipe.text_encoder_2], device, offload):
+            compel = Compel(
+                tokenizer=pipe.tokenizer_2,
+                text_encoder=pipe.text_encoder_2,
+                returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+                requires_pooled=True,
+                truncate_long_prompts=False,
+                device=str(device),
+            )
+        return compel, warnings
+    except Exception as exc:  # noqa: BLE001 - compel failure must not be fatal
+        warnings.append(
+            f"compel unavailable for the refiner ({type(exc).__name__}); its prompt attention "
+            "weights will be ignored and the raw text sent to CLIP"
+        )
+        return None, warnings
+
+
+def _prepare_load(precision: str) -> tuple[Any, bool, Any, list[str], list[str]]:
+    """What every load does before reading weights: probe, plan the VAE, load the fix VAE.
+
+    Returns ``(torch_dtype, upcast_vae, vae, warnings, notes)``. The probe runs
+    before any weights are resident: it needs its own VRAM, and with offload
+    disabled there is none to spare later.
+    """
+    warnings: list[str] = []
+    notes: list[str] = []
+    torch_dtype = torch_dtype_for(precision)
+    cudnn = apply_cudnn_workaround()
+    warnings.extend(cudnn.warnings)
+    notes.extend(cudnn.notes)
+    upcast_vae, upcast_warnings, upcast_notes = _plan_vae_precision(torch_dtype)
+    warnings.extend(upcast_warnings)
+    notes.extend(upcast_notes)
+    vae, vae_warnings = _load_vae(torch_dtype)
+    warnings.extend(vae_warnings)
+    return torch_dtype, upcast_vae, vae, warnings, notes
+
+
+def _finish_load(pipe: Any, precision: str, upcast_vae: bool, warnings: list[str], notes: list[str]) -> str:
+    """What every load does after reading weights. Returns the offload mode used."""
+    offload, memory_warnings, memory_notes = _apply_memory_strategy(pipe, precision)
+    warnings.extend(memory_warnings)
+    notes.extend(memory_notes)
+    warnings.extend(_apply_vae_precision(pipe, upcast_vae))
+    pipe.set_progress_bar_config(disable=True)
+    return offload
+
+
+def _is_cached(kind: str, model_id: str, controlnet_id: Optional[str], precision: str) -> bool:
+    cached = _CACHE
+    return cached is not None and (
+        cached.kind, cached.model_id, cached.controlnet_id, cached.precision
+    ) == (kind, model_id, controlnet_id, precision)
+
+
+def resident() -> Optional[dict[str, Any]]:
+    """What the single cache slot holds right now, or None."""
+    cached = _CACHE
+    if cached is None:
+        return None
+    return {
+        "kind": cached.kind,
+        "model": cached.model_id,
+        "controlnet": cached.controlnet_id,
+        "precision": cached.precision,
+    }
+
+
+def load_pipeline(
+    model_id: str, controlnet_id: Optional[str] = None, precision: Optional[str] = None
+) -> LoadedPipeline:
     """Load (or reuse) the base pipeline for a model, optionally with ControlNet.
 
     Thread-safe and single-slot: only one checkpoint is held at a time, because
     two resident SDXL models would not fit in 16 GB of system RAM alongside the
-    offload buffers. The sampler is set per render, by :func:`apply_sampler`.
+    offload buffers. ``precision`` defaults to ``CLAUDALI_DTYPE``; a different
+    precision is a different pipeline. The sampler is set per render, by
+    :func:`apply_sampler`.
     """
     global _CACHE
 
+    precision = precision or SETTINGS.dtype
     with _LOCK:
-        if (
-            _CACHE is not None
-            and _CACHE.model_id == model_id
-            and _CACHE.controlnet_id == controlnet_id
-        ):
+        if _is_cached("base", model_id, controlnet_id, precision):
+            assert _CACHE is not None
             return _CACHE
 
-        import torch
         from diffusers import (
             ControlNetModel,
             StableDiffusionXLControlNetPipeline,
             StableDiffusionXLPipeline,
         )
 
-        warnings: list[str] = []
-        notes: list[str] = []
-        torch_dtype = SETTINGS.torch_dtype
         path, layout = resolve_checkpoint(model_id)
-
-        # Probe the card before any weights are resident: the measurement needs
-        # its own VRAM, and with offload disabled there is none to spare later.
-        cudnn = apply_cudnn_workaround()
-        warnings.extend(cudnn.warnings)
-        notes.extend(cudnn.notes)
-        upcast_vae, upcast_warnings, upcast_notes = _plan_vae_precision(torch_dtype)
-        warnings.extend(upcast_warnings)
-        notes.extend(upcast_notes)
-
-        vae, vae_warnings = _load_vae(torch_dtype)
-        warnings.extend(vae_warnings)
+        torch_dtype, upcast_vae, vae, warnings, notes = _prepare_load(precision)
 
         common: dict[str, Any] = {
             "torch_dtype": torch_dtype,
@@ -609,13 +778,8 @@ def load_pipeline(model_id: str, controlnet_id: Optional[str] = None) -> LoadedP
             )
             pipe = StableDiffusionXLControlNetPipeline.from_pipe(pipe, controlnet=controlnet)
 
-        memory_warnings, memory_notes = _apply_memory_strategy(pipe)
-        warnings.extend(memory_warnings)
-        notes.extend(memory_notes)
-        warnings.extend(_apply_vae_precision(pipe, upcast_vae))
-        pipe.set_progress_bar_config(disable=True)
-
-        compel, compel_warnings = _build_compel(pipe)
+        offload = _finish_load(pipe, precision, upcast_vae, warnings, notes)
+        compel, compel_warnings = _build_compel(pipe, offload)
         warnings.extend(compel_warnings)
 
         _CACHE = LoadedPipeline(
@@ -626,8 +790,127 @@ def load_pipeline(model_id: str, controlnet_id: Optional[str] = None) -> LoadedP
             compel=compel,
             warnings=warnings,
             notes=notes,
+            kind="base",
+            precision=precision,
+            offload=offload,
+            source=Path(path),
+            layout=layout,
         )
         return _CACHE
+
+
+def load_refiner(model_id: str, precision: Optional[str] = None) -> LoadedPipeline:
+    """Load (or reuse) the SDXL refiner as an img2img pipeline, in the single cache slot.
+
+    Loading it unloads whatever base model is resident, which is the point of
+    running every variation's base stage first. Its config asks for aesthetic
+    scores and it has no first text encoder. Under fp16 it takes the fp16-fix
+    VAE for the same reason the base does. **Untested on hardware.**
+    """
+    global _CACHE
+
+    precision = precision or SETTINGS.dtype
+    with _LOCK:
+        if _is_cached("refiner", model_id, None, precision):
+            assert _CACHE is not None
+            return _CACHE
+
+        from diffusers import StableDiffusionXLImg2ImgPipeline
+
+        entry = get_model(model_id)
+        if entry.kind != "refiner":
+            raise ValueError(f"'{model_id}' is a {entry.kind}, not a refiner")
+        if not entry.is_installed():
+            raise FileNotFoundError(
+                f"the refiner '{model_id}' is not installed. Run: "
+                f"python -m installer models --add {model_id}"
+            )
+
+        torch_dtype, upcast_vae, vae, warnings, notes = _prepare_load(precision)
+        kwargs: dict[str, Any] = {
+            "torch_dtype": torch_dtype,
+            "use_safetensors": True,
+            "variant": _variant_for(entry.local_dir),
+            "local_files_only": True,
+        }
+        if vae is not None:
+            kwargs["vae"] = vae
+
+        if _CACHE is not None:
+            _release_locked()
+        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(str(entry.local_dir), **kwargs)
+
+        offload = _finish_load(pipe, precision, upcast_vae, warnings, notes)
+        compel, compel_warnings = _build_refiner_compel(pipe, offload)
+        warnings.extend(compel_warnings)
+
+        _CACHE = LoadedPipeline(
+            model_id=model_id,
+            controlnet_id=None,
+            pipe=pipe,
+            base_scheduler=pipe.scheduler,
+            compel=compel,
+            warnings=warnings,
+            notes=notes,
+            kind="refiner",
+            precision=precision,
+            offload=offload,
+            source=entry.local_dir,
+            layout="diffusers",
+        )
+        return _CACHE
+
+
+def cpu_vae(loaded: LoadedPipeline) -> Any:
+    """The checkpoint's own VAE in fp32 on the CPU, loaded on first use and kept with it.
+
+    This is the reference decode: fp32 throughout, with the VAE the checkpoint
+    shipped with rather than the fp16-fix VAE the GPU path swaps in. The weights
+    on disk are fp16 variants, so it is fp32 computation on upcast weights.
+
+    A single-file checkpoint carries its VAE inside the one file. Only those
+    tensors are read, lazily through safetensors, and handed to diffusers' own
+    single-file converter: loading the whole 7 GB file for 160 MB of VAE would
+    not fit beside a loaded pipeline.
+    """
+    with _LOCK:
+        if loaded.cpu_vae is not None:
+            return loaded.cpu_vae
+
+        import torch
+        from diffusers import AutoencoderKL
+
+        if loaded.source is None:
+            raise ValueError("this pipeline does not record where its weights came from")
+        source = Path(loaded.source)
+        if loaded.layout == "single_file":
+            from safetensors import safe_open
+
+            with safe_open(str(source), framework="pt", device="cpu") as handle:
+                weights = {
+                    key: handle.get_tensor(key)
+                    for key in handle.keys()
+                    if key.startswith(_SINGLE_FILE_VAE_PREFIXES)
+                }
+            vae = AutoencoderKL.from_single_file(
+                weights,
+                config=str(get_model("sdxl-base").local_dir),
+                subfolder="vae",
+                torch_dtype=torch.float32,
+                local_files_only=True,
+            )
+        else:
+            vae = AutoencoderKL.from_pretrained(
+                str(source),
+                subfolder="vae",
+                variant=_variant_for(source / "vae"),
+                torch_dtype=torch.float32,
+                local_files_only=True,
+            )
+        vae.to("cpu")
+        vae.eval()
+        loaded.cpu_vae = vae
+        return vae
 
 
 def apply_sampler(loaded: LoadedPipeline, sampler: str) -> list[str]:
@@ -653,10 +936,30 @@ def derive_pipeline(loaded: LoadedPipeline, task: str) -> Any:
     if task == "txt2img":
         return loaded.pipe
     if task == "img2img":
-        return AutoPipelineForImage2Image.from_pipe(loaded.pipe)
-    if task == "inpaint":
-        return AutoPipelineForInpainting.from_pipe(loaded.pipe)
-    raise ValueError(f"unknown task '{task}'")
+        derived = AutoPipelineForImage2Image.from_pipe(loaded.pipe)
+    elif task == "inpaint":
+        derived = AutoPipelineForInpainting.from_pipe(loaded.pipe)
+    else:
+        raise ValueError(f"unknown task '{task}'")
+    # from_pipe does not carry the progress bar setting over, and a tqdm bar
+    # fights the CLI's own progress line.
+    derived.set_progress_bar_config(disable=True)
+    return derived
+
+
+def hires_pipeline(loaded: LoadedPipeline) -> Any:
+    """An img2img pipeline on the loaded base weights, for the hi-res pass.
+
+    Named by class rather than through AutoPipeline: from a ControlNet pipeline,
+    AutoPipeline builds ControlNet img2img, which wants a control image at the new
+    size. ``from_pipe`` into plain img2img leaves the ControlNet out, so the pass
+    runs uncontrolled, as the compiled notes say.
+    """
+    from diffusers import StableDiffusionXLImg2ImgPipeline
+
+    derived = StableDiffusionXLImg2ImgPipeline.from_pipe(loaded.pipe)
+    derived.set_progress_bar_config(disable=True)
+    return derived
 
 
 def _release_locked() -> None:
@@ -687,8 +990,15 @@ __all__ = [
     "SAMPLERS",
     "LoadedPipeline",
     "apply_sampler",
+    "cpu_vae",
     "derive_pipeline",
     "device_report",
+    "execution_device",
+    "free_offload_hooks",
+    "hires_pipeline",
     "load_pipeline",
+    "load_refiner",
     "release",
+    "resident",
+    "torch_dtype_for",
 ]

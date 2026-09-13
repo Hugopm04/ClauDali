@@ -1,0 +1,9 @@
+{
+  "name": "pause refiner",
+  "notes": "Manual test. Two variations with the refiner, small enough to pause inside the refiner stage and resume. Both base stages run before the refiner loads. Needs sdxl-refiner installed.",
+  "intent": "photoreal",
+  "subject": { "primary": "a ceramic teapot with a chipped spout", "anchor": "ceramic teapot" },
+  "scene": { "background": "plain linen cloth" },
+  "render": { "model": "sdxl-base", "width": 768, "height": 768, "steps": 10, "seed": 5, "variations": 2, "vae_decode": "gpu_tiled" },
+  "refiner": { "enabled": true, "handoff": 0.6 }
+}

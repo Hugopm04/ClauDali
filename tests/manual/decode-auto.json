@@ -1,0 +1,10 @@
+{
+  "name": "decode auto",
+  "notes": "Manual test. Identical to decode-gpu-tiled.json and decode-cpu.json except for render.vae_decode: auto decides by free RAM at decode time, and the bundle's variation record says what it chose.",
+  "intent": "photoreal",
+  "subject": { "primary": "a lone white sailboat on a calm sea", "anchor": "white sailboat" },
+  "scene": { "time": "dusk", "weather": "cloudless sky, a smooth gradient from orange to deep blue" },
+  "camera": { "shot": "wide" },
+  "composition": { "aspect": "16:9", "horizon": 0.66 },
+  "render": { "steps": 12, "seed": 2026, "vae_decode": "auto" }
+}

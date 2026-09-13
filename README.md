@@ -69,7 +69,8 @@ difference between a forest with fairies in it and an empty forest. See
 - **An NVIDIA GPU with 6 GB VRAM or more.** ClauDali runs without one, but a CPU
   render takes tens of minutes per image.
 - **Disk**: ~5 GB for PyTorch and dependencies, plus 7.5–22.3 GB of model
-  weights depending on the profile you choose.
+  weights depending on the profile you choose, and 6.3 GB more for the optional
+  quality models.
 
 Everything is installed *inside this folder* — the virtual environment in
 `.venv/`, the weights and HuggingFace cache in `models/`. Nothing is written to
@@ -81,12 +82,13 @@ your user profile, which is what lets the uninstaller reclaim every byte.
 .\install.ps1                      # standard profile, ~8.1 GB of models
 .\install.ps1 -ModelProfile full   # adds both fine-tunes, ~22.3 GB
 .\install.ps1 -ModelProfile minimal # SDXL base only, ~7.5 GB
+.\install.ps1 -QualityModels       # any profile, plus the refiner and Real-ESRGAN, +6.3 GB
 ```
 
 On Linux or macOS, call the same logic directly:
 
 ```bash
-python -m installer install --profile standard
+python -m installer install --profile standard [--with-quality-models]
 ```
 
 | Profile | Size | Contents |
@@ -94,6 +96,11 @@ python -m installer install --profile standard
 | `minimal` | 7.5 GB | SDXL base + the fp16-fix VAE. Everything works. |
 | `standard` | 8.1 GB | Adds the depth and canny ControlNets. **Default.** |
 | `full` | 22.3 GB | Adds Juggernaut XL (photoreal) and DreamShaper XL (painterly). |
+| quality models | +6.3 GB | The SDXL refiner (6.25 GB) and Real-ESRGAN x4 (0.07 GB), on top of any profile. Only for the [quality options](#quality-options). |
+
+The quality models are never downloaded unless you ask: `-QualityModels`,
+`--with-quality-models`, or `python -m installer models --add sdxl-refiner
+realesrgan-x4` on an existing install.
 
 The installer detects your GPU, picks a matching PyTorch build, shows a real
 byte-level progress bar per model, and resumes partial downloads if it is
@@ -134,7 +141,9 @@ shows you the prompt without spending GPU time. **Preview control** shows the
 composition map before you commit to a render. Results arrive with previews, a
 contact sheet and diagnostics, and history is one click away. A running job can
 be paused, either letting the next queued job run or holding the queue, and
-resumed later exactly where it stopped.
+resumed later exactly where it stopped. The **Quality** section picks the
+quality preset, VAE decode, precision, refiner and hi-res pass, and says what
+the VAE decode will do with the RAM free right now.
 
 ### 2. The HTTP API
 
@@ -215,7 +224,9 @@ overrides those defaults.
 | `composition` | Aspect, framing rule, horizon, and the **layer stack** |
 | `control` | ControlNet mode, source and strength |
 | `init` | img2img source, strength, mask for inpainting |
-| `render` | Model, size, steps, CFG, sampler, seed, variations |
+| `render` | Model, size, steps, CFG, sampler, seed, variations, and the quality preset, precision and VAE decode |
+| `refiner` | The optional SDXL refiner stage |
+| `hires` | The optional hi-res pass: upscale, then re-sample |
 | `negative` | Negative presets and extras |
 | `overlays` | Text, shapes, gradients, vignettes drawn after diffusion |
 | `post` | Seamless, transparent background, pixelate, palette lock, grain |
@@ -286,7 +297,8 @@ job paused mid-image, `state.pt` with the latents and sampler state (about
 
 `result.json` carries the diagnostics: exposure and clipping, dynamic range,
 sharpness, dominant palette with coverage, where the visual weight sits, and
-flags for known failure modes. That is what makes "which of these four is best,
+flags for known failure modes. Each image also records where its VAE decode ran
+and the free RAM that decided it. That is what makes "which of these four is best,
 and what should change" answerable without opening a single file.
 
 ---
@@ -308,6 +320,30 @@ back to a contact sheet. Slowness costs wall-clock time, not exploration.
 Cards with 12 GB or more can set `CLAUDALI_OFFLOAD=none` to keep the whole
 pipeline resident, which is considerably faster.
 
+## Quality options
+
+Any render can trade time for quality, one option at a time or all at once
+with `"render": {"quality": "max"}`. None is on by default, and whatever a spec
+sets explicitly beats the preset.
+
+| Option | What it buys | What it costs |
+|---|---|---|
+| `render.vae_decode: "cpu"` | The finished image decoded in fp32 with the checkpoint's own VAE, in one piece instead of blended tiles. On a real 768×768 image SDXL base's VAE reconstructed at 50.2 dB PSNR, the fp16-fix VAE the GPU uses at 43.6 dB | ~5.6 GB of free RAM per megapixel. Measured for 1344×768: 29.0 s on the CPU, against 25.5 s tiled on the GPU. Short of RAM it pages, and the next render can be slowed while the weights page back in |
+| `render.precision: "fp32"` | No fp16 numerics anywhere | ~13–14 GB of RAM and sequential offload on a 6 GB card. Speed unmeasured |
+| `refiner.enabled` | The SDXL refiner finishes the last 20% of the schedule | A 6.25 GB download, and a model swap between the base and refiner stages. Untested on hardware |
+| `hires.enabled` | Upscale 1.5× and re-sample at low strength, for detail the base size cannot hold | Each hi-res step samples 2.25× the pixels. Full size unmeasured on 6 GB; Real-ESRGAN untested |
+
+**On a 16 GB laptop, the default `auto` decode almost never runs on the CPU.**
+`auto` decodes on the CPU only when free RAM covers the estimate. Measured on
+the GTX 1660 Ti laptop with SDXL base loaded: 0.1 GB free at decode time for a
+768×768 image that wants ~4.3 GB, so it fell back to the GPU. Forcing `cpu`
+worked all the same, paging, with no black frames. In the web UI that is
+**Force CPU fp32 untiled**, and the line under it says what `auto` would do with
+the RAM free right now.
+
+The full reference is under [quality options in the scene spec](docs/scene-spec.md#quality-options).
+The refiner and Real-ESRGAN are optional downloads; see [Install](#install).
+
 ---
 
 ## Configuration
@@ -318,7 +354,8 @@ Environment variables, all optional:
 |---|---|---|
 | `CLAUDALI_HOST` / `CLAUDALI_PORT` | `127.0.0.1` / `8188` | Where the server listens |
 | `CLAUDALI_OFFLOAD` | `model` | `model`, `sequential` (less VRAM, slower) or `none` |
-| `CLAUDALI_DTYPE` | `float16` | `float32` avoids fp16 faults, but its ~10 GB UNet does not fit a 6 GB card under model offload |
+| `CLAUDALI_DTYPE` | `float16` | Default precision. `float32` avoids fp16 faults; on a card under 12 GB it switches to sequential offload and needs ~13–14 GB of RAM. A spec's `render.precision` wins |
+| `CLAUDALI_VAE_DECODE` | `auto` | Default VAE decode: `auto`, `cpu`, `gpu` or `gpu_tiled`, see [Quality options](#quality-options). A spec's `render.vae_decode` wins |
 | `CLAUDALI_FP16_VAE_FIX` | `1` | Use the fp16-safe VAE. Required on GTX 16-series cards |
 | `CLAUDALI_CUDNN` | `auto` | `auto` disables cuDNN if its fp16 convolutions return NaNs; `on` and `off` decide outright |
 | `CLAUDALI_VAE_UPCAST` | `auto` | Decode the VAE in fp32. `auto` only fires if the fault survives `CLAUDALI_CUDNN`; `always` and `never` decide outright |
@@ -363,10 +400,11 @@ UNet and the VAE alike, which the fix VAE does not prevent. Run `python -m
 claudali doctor`: if `fp16_conv_broken` is true and `cudnn_disabled` is also
 true, ClauDali has already worked around it, and this render is black for some
 other reason. If `cudnn_disabled` is false, force it with `CLAUDALI_CUDNN=off`.
-If cuDNN is off and images are still black, add `CLAUDALI_VAE_UPCAST=always`.
-`CLAUDALI_DTYPE=float32` avoids all of them, but only on a card with the VRAM for
-it: the fp32 UNet alone is ~10 GB, which does not fit a 6 GB card under model
-offload.
+If cuDNN is off and images are still black, add `CLAUDALI_VAE_UPCAST=always`, or
+decode on the CPU with `render.vae_decode: "cpu"`, which is fp32 throughout.
+`render.precision: "fp32"` avoids all of them. On a 6 GB card it switches to
+sequential offload and needs ~13–14 GB of RAM for the weights; how slow that is
+has not been measured.
 
 Which shapes the cuDNN fault hits is unpredictable, so a working render at one
 size is no guarantee at another: on the machine this was measured on, 1024×1024
@@ -397,8 +435,11 @@ it has no concept of a glyph. Use `overlays` for anything that must be legible.
 
 The test suite needs no GPU, no model weights and no network: it covers the spec
 contract, the prompt compiler, the procedural control maps, compositing,
-postprocessing, diagnostics and the engine's device decisions. Regenerate the
-vocabulary reference after editing any table under `claudali/vocabulary/`:
+postprocessing, diagnostics, the engine's device decisions, pause and resume,
+and the quality stages on tiny random pipelines. What only a real GPU and a
+person looking can check is written up as a checklist with its specs in
+[tests/manual/](tests/manual/README.md). Regenerate the vocabulary reference
+after editing any table under `claudali/vocabulary/`:
 
 ```bash
 python scripts/gen_vocab_docs.py
@@ -417,6 +458,6 @@ python scripts/gen_vocab_docs.py
 MIT — see [LICENSE](LICENSE).
 
 Model weights are downloaded from HuggingFace under their own licences
-(CreativeML Open RAIL++-M for the SDXL checkpoints, MIT for the fp16-fix VAE,
-OpenRAIL++ for the ControlNets). Those licences govern what you may do with the
+(CreativeML Open RAIL++-M for the SDXL checkpoints and the refiner, MIT for the
+fp16-fix VAE, OpenRAIL++ for the ControlNets, BSD-3-Clause for Real-ESRGAN). Those licences govern what you may do with the
 images you generate; this project's MIT licence covers only its own code.

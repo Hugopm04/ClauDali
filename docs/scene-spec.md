@@ -270,10 +270,91 @@ than ignoring one of them.
 | `seed` | int | random | |
 | `variations` | int 1–16 | `1` | |
 | `clip_skip` | int 1–4 | — | |
+| `quality` | enum | `"standard"` | `standard`, or `max` to turn on every quality option below you leave unset |
+| `precision` | enum | server (`CLAUDALI_DTYPE`) | `fp16` or `fp32` |
+| `vae_decode` | enum | server (`CLAUDALI_VAE_DECODE`, `auto`) | `auto`, `cpu`, `gpu`, `gpu_tiled` |
 
 With a fixed `seed`, variations use consecutive seeds (`seed`, `seed+1`, …) so a
 batch explores a neighbourhood you can return to exactly, rather than rendering
 the same image repeatedly.
+
+### Quality options
+
+Every one of these is optional per render, and each costs time. The compiled
+result says what it resolved them to: `precision`, `vae_decode`, `refiner`,
+`hires` and `stages`.
+
+**`vae_decode`** is where the finished latents become pixels.
+
+| Value | What it does |
+|---|---|
+| `auto` | CPU in fp32 without tiling, with the checkpoint's own VAE, when free RAM covers ~5.6 GB per megapixel plus 1 GB; otherwise the GPU with tiling, and a note says so |
+| `cpu` | CPU in fp32 without tiling, whatever RAM is free; the machine pages if it must. Out of memory entirely, it retries tiled on the CPU with a warning |
+| `gpu` | GPU without tiling, retrying tiled with a note if the card runs out of memory |
+| `gpu_tiled` | GPU with tiling: the fastest and smallest, and what every render did before these options existed |
+
+Tiling decodes overlapping tiles and blends them. It is a compromise, and on the
+GPU every SDXL size is tiled, 1:1 included: the fp16-fix VAE tiles anything over
+512 px on a side. Measured for one 1344×768 image on a GTX 1660
+Ti: GPU tiled 25.5 s, CPU fp32 untiled 29.0 s using ~5.8 GB of RAM. On a 16 GB
+laptop with a pipeline loaded, `auto` usually falls back, so `cpu` is how to get
+the untiled decode there. Each image's record in the bundle says where it was
+decoded and how much RAM was free.
+
+**`precision: "fp32"`** avoids fp16 numerics altogether. An fp32 UNet is ~10 GB,
+so on a card under 12 GB the load switches to sequential offload, and the
+weights need ~13–14 GB of RAM. Its speed and memory use have not been measured.
+
+**`quality: "max"`** is a preset in the way an intent is: it supplies fp32
+precision, `vae_decode: "cpu"`, the refiner (when installed) and the hi-res pass
+(with Real-ESRGAN when installed, else Lanczos), and anything you set explicitly
+wins. `"refiner": {"enabled": false}` under `max` keeps everything else. It
+changes no steps, CFG or sampler. A note lists what it turned on; a warning names
+anything it could not.
+
+## `refiner`
+
+The SDXL refiner as a second stage. The base model runs the first `handoff` of
+the schedule and stops; the refiner, trained on the low-noise end, finishes it.
+Every variation's base stage runs first, then the base model is unloaded and the
+refiner runs, so only one model is in memory at a time.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | On under `render.quality: "max"` unless set |
+| `model` | string | `"sdxl-refiner"` | Catalogue id of a refiner |
+| `handoff` | float 0–1 | `0.8` | Fraction of the schedule the base model runs |
+| `aesthetic_score` | float 0–10 | `6.0` | Refiner conditioning |
+| `negative_aesthetic_score` | float 0–10 | `2.5` | |
+
+The refiner is an optional download: `python -m installer models --add
+sdxl-refiner` (6.25 GB). Asked for explicitly and not installed, a render stops
+with an error; under `max` it is a warning. It does not work with `init` yet
+(an error). With `control` the refiner stage runs uncontrolled, and with a
+fine-tune such as `juggernaut-xl` a warning says the refiner, trained on SDXL
+base's outputs, may wash out its look. **Untested on hardware.**
+
+## `hires`
+
+A hi-res pass: the finished image is upscaled, then re-sampled with img2img at a
+low strength, which adds real detail at the larger size. It runs after the
+refiner when both are on.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | On under `render.quality: "max"` unless set |
+| `scale` | float, above 1, up to 2 | `1.5` | The size, rounded to multiples of 8 |
+| `upscaler` | enum | `"lanczos"` | `lanczos`, or `realesrgan-x4` |
+| `strength` | float 0–1 | `0.3` | How far the pass departs from the upscale |
+| `steps` | int 1–150 | the compiled steps | The pass runs `steps × strength` of them |
+
+`realesrgan-x4` needs its model (`python -m installer models --add
+realesrgan-x4`, 0.07 GB) and the `spandrel` package, which the installer's
+requirements include; missing, an explicit request stops with an error. A hi-res
+step samples `scale²` times the pixels, so it costs that much more than a base
+step, and the pass runs without ControlNet or regional masks. A 1344×768 image
+at 1.5× is 2016×1152; that full size is unmeasured on a 6 GB card, and
+Real-ESRGAN is untested on hardware.
 
 ## `negative`
 

@@ -34,10 +34,12 @@ from .compiler import compile_spec, load_vocabulary, vocabulary_index
 from .compose import available_fonts
 from .config import OUTPUTS_DIR, RUNS_DIR, SETTINGS, ensure_dirs
 from .control.maps import build_control_image
+from .engine.decode import CPU_GB_PER_MEGAPIXEL, CPU_MARGIN_GB
 from .engine.pipelines import SAMPLERS
 from .jobs import FINISHED, QUEUE, QUEUE_STATE_FILE, JobStateError, JobStatus, QueueFull
 from .registry import CATALOG, PROFILES, custom_checkpoints, profile_size_gb
 from .spec import ASPECT_BUCKETS, SceneSpec
+from .sysinfo import memory_gb
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +181,28 @@ def health() -> dict[str, Any]:
             "offload": SETTINGS.offload,
             "dtype": SETTINGS.dtype,
             "fp16_vae_fix": SETTINGS.fp16_vae_fix,
+            "vae_decode": SETTINGS.vae_decode,
         },
+    }
+
+
+@app.get("/api/memory")
+def memory() -> dict[str, Any]:
+    """Free RAM right now, and what the VAE decode policy measures it against. No torch.
+
+    ``auto`` decodes on the CPU in fp32 without tiling when ``available_gb`` covers
+    ``cpu_gb_per_megapixel * megapixels + margin_gb``, and on the GPU tiled otherwise.
+    """
+    reading = memory_gb()
+    return {
+        "available_gb": round(reading[0], 1) if reading else None,
+        "total_gb": round(reading[1], 1) if reading else None,
+        "vae_decode": {
+            "default": SETTINGS.vae_decode,
+            "cpu_gb_per_megapixel": CPU_GB_PER_MEGAPIXEL,
+            "margin_gb": CPU_MARGIN_GB,
+        },
+        "dtype": SETTINGS.dtype,
     }
 
 

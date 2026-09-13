@@ -1,0 +1,9 @@
+{
+  "name": "pause hires",
+  "notes": "Manual test. Two variations with a hi-res pass and no refiner, small enough to pause and resume in a few minutes: pause once in a base stage and once in a hi-res stage, and check each image against an uninterrupted run of the same file.",
+  "intent": "photoreal",
+  "subject": { "primary": "a ceramic teapot with a chipped spout", "anchor": "ceramic teapot" },
+  "scene": { "background": "plain linen cloth" },
+  "render": { "model": "sdxl-base", "width": 768, "height": 768, "steps": 8, "seed": 5, "variations": 2, "vae_decode": "gpu_tiled" },
+  "hires": { "enabled": true, "scale": 1.5, "strength": 0.5 }
+}

@@ -24,7 +24,8 @@ from typing import Any, Optional
 
 import yaml
 
-from . import tokens
+from . import registry, tokens
+from .config import SETTINGS
 from .spec import Layer, SceneSpec
 
 VOCAB_DIR = Path(__file__).resolve().parent / "vocabulary"
@@ -127,6 +128,20 @@ class CompiledPrompt:
     anchors: list[str] = field(default_factory=list)
     # Per-layer prompts encoded separately, when composition.regional is on.
     regions: list[dict[str, Any]] = field(default_factory=list)
+    # The quality options the render uses, resolved by _resolve_quality from
+    # render.quality, the spec's own fields and the server's settings, and frozen
+    # with the prompt so a resumed render keeps them. The defaults describe a
+    # prompt compiled before these options existed, which decoded on the GPU tiled.
+    quality: str = "standard"
+    precision: str = "float16"
+    vae_decode: str = "gpu_tiled"
+    refiner: Optional[dict[str, Any]] = None
+    hires: Optional[dict[str, Any]] = None
+
+    @property
+    def stages(self) -> list[str]:
+        """The sampler stages each variation goes through, in order."""
+        return ["base", *(["refiner"] if self.refiner else []), *(["hires"] if self.hires else [])]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +161,12 @@ class CompiledPrompt:
             "negative_tokens": self.negative_tokens.to_dict() if self.negative_tokens else None,
             "anchors": self.anchors,
             "regions": self.regions,
+            "quality": self.quality,
+            "precision": self.precision,
+            "vae_decode": self.vae_decode,
+            "refiner": self.refiner,
+            "hires": self.hires,
+            "stages": self.stages,
         }
 
     @classmethod
@@ -176,6 +197,11 @@ class CompiledPrompt:
             negative_tokens=count(data.get("negative_tokens")),
             anchors=list(data.get("anchors", [])),
             regions=list(data.get("regions", [])),
+            quality=data.get("quality", "standard"),
+            precision=data.get("precision", "float16"),
+            vae_decode=data.get("vae_decode", "gpu_tiled"),
+            refiner=data.get("refiner"),
+            hires=data.get("hires"),
         )
 
 
@@ -425,6 +451,196 @@ def _assemble(pieces: list[str], anchor: str) -> tuple[str, list[str], list[str]
     return ", ".join(parts), anchors, warnings
 
 
+PRECISIONS = {"fp16": "float16", "fp32": "float32"}
+DTYPES = ("float16", "bfloat16", "float32")
+VAE_DECODE_MODES = ("auto", "cpu", "gpu", "gpu_tiled")
+
+
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _resolve_refiner(
+    spec: SceneSpec, builder: _Builder, model: str, maximum: bool, turned_on: list[str]
+) -> Optional[dict[str, Any]]:
+    settings = spec.refiner
+    explicit = "enabled" in settings.model_fields_set
+    if not (settings.enabled if explicit else maximum):
+        return None
+
+    has_init = spec.init is not None
+    problem = (
+        "the refiner does not support init images or inpainting yet"
+        if has_init
+        else registry.refiner_problem(settings.model)
+    )
+    if problem is not None and not explicit:
+        # The preset asked, not the caller: leave the stage out and say why.
+        if has_init:
+            builder.notes.append(f"render.quality 'max' left the refiner off: {problem}")
+        else:
+            builder.warnings.append(f"render.quality 'max' would add the refiner, but {problem}")
+        return None
+    if problem is not None:
+        builder.warnings.append(
+            f"refiner.enabled is set, but {problem}; rendering this spec stops with an error"
+        )
+
+    if not explicit:
+        turned_on.append("the SDXL refiner")
+    if spec.control.mode != "none":
+        builder.notes.append(
+            "the refiner stage runs without ControlNet: the composition is fixed by the base "
+            f"model's first {settings.handoff:.0%} of the schedule"
+        )
+    if model != "sdxl-base":
+        builder.warnings.append(
+            f"the refiner was trained on SDXL base's own outputs and '{model}' is a fine-tune, "
+            "so the refiner may wash out its look. Compare against refiner.enabled false, or "
+            "render.model 'sdxl-base'."
+        )
+    if spec.composition.regional.enabled:
+        builder.notes.append(
+            "composition.regional conditions the base stage only; the refiner has its own UNet "
+            "and runs on the global prompt"
+        )
+    return {
+        "model": settings.model,
+        "handoff": settings.handoff,
+        "aesthetic_score": settings.aesthetic_score,
+        "negative_aesthetic_score": settings.negative_aesthetic_score,
+    }
+
+
+def _resolve_hires(
+    spec: SceneSpec,
+    builder: _Builder,
+    maximum: bool,
+    turned_on: list[str],
+    steps: int,
+    width: int,
+    height: int,
+) -> Optional[dict[str, Any]]:
+    settings = spec.hires
+    explicit = "enabled" in settings.model_fields_set
+    if not (settings.enabled if explicit else maximum):
+        return None
+
+    if "upscaler" in settings.model_fields_set or not maximum:
+        upscaler = settings.upscaler
+        problem = registry.upscaler_problem() if upscaler == "realesrgan-x4" else None
+        if problem is not None:
+            builder.warnings.append(
+                f"hires.upscaler is 'realesrgan-x4', but {problem}; rendering this spec stops "
+                "with an error"
+            )
+    else:
+        problem = registry.upscaler_problem()
+        upscaler = "lanczos" if problem else "realesrgan-x4"
+        if problem:
+            builder.notes.append(
+                "render.quality 'max' upscales with Lanczos before the hi-res pass. Real-ESRGAN "
+                f"would be the sharper start, but {problem}"
+            )
+
+    schedule = settings.steps or steps
+    if int(schedule * settings.strength) < 1:
+        builder.warnings.append(
+            f"the hi-res pass would run {schedule} steps x strength {settings.strength} = 0 "
+            "steps; raise hires.steps or hires.strength. Rendering this spec stops with an error"
+        )
+    # Multiples of 8, which the VAE and the UNet both need.
+    target_width = max(8, round(width * settings.scale / 8) * 8)
+    target_height = max(8, round(height * settings.scale / 8) * 8)
+
+    if not explicit:
+        turned_on.append(f"a {settings.scale:g}x hi-res pass to {target_width}x{target_height}")
+    if spec.control.mode != "none":
+        builder.notes.append(
+            "the hi-res pass runs without ControlNet: it starts from the controlled image and "
+            "keeps its composition at low strength"
+        )
+    if spec.composition.regional.enabled:
+        builder.notes.append(
+            f"composition.regional conditions the base stage only: its masks are sized for "
+            f"{width}x{height}, so the hi-res pass runs on the global prompt"
+        )
+    if spec.init is not None and (spec.init.mask or spec.init.mask_layer):
+        builder.notes.append(
+            f"the hi-res pass re-samples the whole image at strength {settings.strength}, "
+            "outside the inpainting mask as well"
+        )
+    return {
+        "scale": settings.scale,
+        "upscaler": upscaler,
+        "strength": settings.strength,
+        "steps": schedule,
+        "width": target_width,
+        "height": target_height,
+    }
+
+
+def _resolve_quality(
+    spec: SceneSpec, builder: _Builder, model: str, steps: int, width: int, height: int
+) -> dict[str, Any]:
+    """Work out the quality options a render uses, as ``CompiledPrompt`` fields.
+
+    ``render.quality: "max"`` is a preset in the way an intent is: it supplies a
+    value for every option the spec leaves unset, and anything set explicitly
+    wins. It changes no steps, CFG or sampler. What it turned on is one note; an
+    option it could not turn on is a warning, or a note when that was a decision.
+    Resolved here rather than in the spec, so a saved spec keeps only what the
+    caller set.
+    """
+    render = spec.render
+    maximum = render.quality == "max"
+    turned_on: list[str] = []
+
+    if render.precision is not None:
+        precision = PRECISIONS[render.precision]
+    elif maximum:
+        precision = "float32"
+        turned_on.append("fp32 precision")
+    else:
+        precision = SETTINGS.dtype
+        if precision not in DTYPES:
+            builder.warnings.append(
+                f"unknown CLAUDALI_DTYPE '{precision}'; expected float16, bfloat16 or float32. "
+                "Using float16."
+            )
+            precision = "float16"
+
+    if render.vae_decode is not None:
+        vae_decode = render.vae_decode
+    elif maximum:
+        vae_decode = "cpu"
+        turned_on.append("a forced CPU fp32 untiled VAE decode")
+    else:
+        vae_decode = SETTINGS.vae_decode
+        if vae_decode not in VAE_DECODE_MODES:
+            builder.warnings.append(
+                f"unknown CLAUDALI_VAE_DECODE '{vae_decode}'; expected auto, cpu, gpu or "
+                "gpu_tiled. Using auto."
+            )
+            vae_decode = "auto"
+
+    refiner = _resolve_refiner(spec, builder, model, maximum, turned_on)
+    hires = _resolve_hires(spec, builder, maximum, turned_on, steps, width, height)
+
+    if turned_on:
+        builder.notes.append(
+            f"render.quality 'max' turned on {_join(turned_on)}. Setting any of them explicitly "
+            "opts out of it. Expect several times the standard render time."
+        )
+    return {
+        "quality": render.quality,
+        "precision": precision,
+        "vae_decode": vae_decode,
+        "refiner": refiner,
+        "hires": hires,
+    }
+
+
 def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     """Compile a :class:`~claudali.spec.SceneSpec` into renderer parameters."""
     vocab = load_vocabulary()
@@ -672,12 +888,15 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
     # of 30. Comparing against the default value would silently override a
     # caller who happened to choose the same number.
     was_set = spec.render.model_fields_set
+    model = spec.render.model or intent.get("model") or "sdxl-base"
+    steps = spec.render.steps if "steps" in was_set else int(intent.get("steps", spec.render.steps))
+    quality = _resolve_quality(spec, builder, model, steps, width, height)
 
     return CompiledPrompt(
         prompt=prompt,
         negative_prompt=negative_prompt,
-        model=spec.render.model or intent.get("model") or "sdxl-base",
-        steps=spec.render.steps if "steps" in was_set else int(intent.get("steps", spec.render.steps)),
+        model=model,
+        steps=steps,
         cfg=spec.render.cfg if "cfg" in was_set else float(intent.get("cfg", spec.render.cfg)),
         sampler=(
             spec.render.sampler
@@ -694,6 +913,7 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
         negative_tokens=negative_count,
         anchors=anchors,
         regions=regions,
+        **quality,
     )
 
 

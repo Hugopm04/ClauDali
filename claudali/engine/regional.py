@@ -47,8 +47,9 @@ timed it.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -74,7 +75,23 @@ class RegionalHandle:
 
     modules: list[Any] = field(default_factory=list)
     originals: list[Any] = field(default_factory=list)
+    processors: list[Any] = field(default_factory=list)
     regions: list[Region] = field(default_factory=list)
+
+    @contextlib.contextmanager
+    def suspended(self) -> Iterator[None]:
+        """Put the original processors back for a while, then the regional ones.
+
+        The hi-res pass runs on the same UNet at a size these masks were not
+        built for, so it runs on the global prompt.
+        """
+        for module, original in zip(self.modules, self.originals):
+            module.set_processor(original)
+        try:
+            yield
+        finally:
+            for module, processor in zip(self.modules, self.processors):
+                module.set_processor(processor)
 
     def remove(self) -> None:
         """Restore the processors this replaced.
@@ -298,11 +315,10 @@ def install(
                 continue
             handle.modules.append(module)
             handle.originals.append(module.get_processor())
-            module.set_processor(
-                _RegionalProcessor(
-                    handle.originals[-1], regions, width, height, settings.strength
-                )
+            handle.processors.append(
+                _RegionalProcessor(handle.originals[-1], regions, width, height, settings.strength)
             )
+            module.set_processor(handle.processors[-1])
 
         if not handle.modules:
             warnings.append(

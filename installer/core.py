@@ -25,7 +25,14 @@ from typing import Iterable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claudali.config import MODELS_DIR, OUTPUTS_DIR, ROOT, RUNS_DIR, VENV_DIR, WEIGHTS_DIR
-from claudali.registry import CATALOG, PROFILES, ModelEntry, download_url, resolve_remote_files
+from claudali.registry import (
+    CATALOG,
+    PROFILES,
+    QUALITY_MODELS,
+    ModelEntry,
+    download_url,
+    resolve_remote_files,
+)
 
 from .download import DownloadError, download_file
 from .progress import Bar, Spinner, Steps, human_bytes, rule
@@ -93,7 +100,12 @@ def venv_python(venv: Path = VENV_DIR) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def preflight(profile: str) -> dict[str, object]:
+def models_to_install(profile: str, with_quality_models: bool = False) -> list[str]:
+    """The profile's models, plus the optional quality models when asked for."""
+    return list(PROFILES[profile]) + (list(QUALITY_MODELS) if with_quality_models else [])
+
+
+def preflight(profile: str, with_quality_models: bool = False) -> dict[str, object]:
     """Check the machine can host the install, and report what it found."""
     rule("Preflight")
 
@@ -114,9 +126,11 @@ def preflight(profile: str) -> dict[str, object]:
     else:
         print("  gpu               none detected — torch will be installed as a CPU build")
 
-    required_gb = sum(CATALOG[model_id].approx_gb for model_id in PROFILES[profile]) + 6.0
+    models = models_to_install(profile, with_quality_models)
+    required_gb = sum(CATALOG[model_id].approx_gb for model_id in models) + 6.0
     free_gb = shutil.disk_usage(ROOT).free / 1e9
-    print(f"  disk              {free_gb:.1f} GB free, ~{required_gb:.1f} GB needed for '{profile}'")
+    label = f"'{profile}'" + (" + quality models" if with_quality_models else "")
+    print(f"  disk              {free_gb:.1f} GB free, ~{required_gb:.1f} GB needed for {label}")
     if free_gb < required_gb:
         raise InstallError(
             f"not enough free space: {free_gb:.1f} GB available, ~{required_gb:.1f} GB needed. "
@@ -343,6 +357,7 @@ def install(
     force_cpu: bool = False,
     skip_torch: bool = False,
     skip_models: bool = False,
+    with_quality_models: bool = False,
 ) -> int:
     if profile not in PROFILES:
         raise InstallError(f"unknown profile '{profile}'. Choose from: {', '.join(PROFILES)}")
@@ -360,7 +375,7 @@ def install(
     steps = Steps(stage_names)
 
     steps.start("Preflight checks")
-    gpu = preflight(profile)
+    gpu = preflight(profile, with_quality_models)
 
     steps.start("Creating the virtual environment")
     python = create_venv(recreate=recreate_venv)
@@ -376,10 +391,11 @@ def install(
     install_requirements(python)
 
     if not skip_models:
-        steps.start(f"Downloading models (profile: {profile})")
+        extra = " + quality models" if with_quality_models else ""
+        steps.start(f"Downloading models (profile: {profile}{extra})")
         for directory in (MODELS_DIR, WEIGHTS_DIR, OUTPUTS_DIR, RUNS_DIR):
             directory.mkdir(parents=True, exist_ok=True)
-        download_models(PROFILES[profile])
+        download_models(models_to_install(profile, with_quality_models))
 
     steps.start("Verifying")
     report = verify(python)

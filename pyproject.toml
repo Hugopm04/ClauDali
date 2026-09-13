@@ -26,6 +26,7 @@ dependencies = [
     "accelerate>=0.30",
     "safetensors>=0.4",
     "compel>=2.4",
+    "spandrel>=0.4",
 ]
 
 [project.optional-dependencies]

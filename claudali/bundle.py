@@ -63,6 +63,8 @@ class VariationRecord:
     image: str
     preview: str
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    # Where its VAE decode ran, and the RAM that decided it (engine/decode.py).
+    decode: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -247,6 +249,7 @@ class BundleWriter:
             image=str(image_path),
             preview=str(preview_path),
             diagnostics=analyse(final),
+            decode=dict(rendered.decode),
         )
         others = [item for item in self.bundle.variations if item.index != rendered.index]
         self.bundle.variations = sorted([*others, record], key=lambda item: item.index)

@@ -1,0 +1,11 @@
+{
+  "name": "hires lanczos",
+  "notes": "Manual test. A 1.5x hi-res pass from 1344x768 to 2016x1152 with the Lanczos upscaler. The full-size pass has never run on a 6 GB card: watch for an out-of-memory error, and time the hi-res steps against the base ones.",
+  "intent": "photoreal",
+  "subject": { "primary": "an old brass pocket watch lying open on a weathered oak table", "anchor": "brass pocket watch" },
+  "scene": { "background": "soft window light, dust in the air" },
+  "camera": { "shot": "tight", "lens": "85mm", "focus": "shallow_dof" },
+  "composition": { "aspect": "16:9" },
+  "render": { "steps": 20, "seed": 314, "vae_decode": "gpu_tiled" },
+  "hires": { "enabled": true, "scale": 1.5, "strength": 0.3, "upscaler": "lanczos" }
+}

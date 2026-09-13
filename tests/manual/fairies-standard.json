@@ -1,0 +1,30 @@
+{
+  "name": "fairies standard",
+  "notes": "Manual test. examples/forest-fairies.json at one variation with a fixed seed: the standard-quality baseline for fairies-max.json.",
+  "intent": "photoreal",
+  "subject": {
+    "primary": "small ethereal fairies hovering in an ancient forest",
+    "anchor": "small ethereal fairies",
+    "count": 3,
+    "details": [
+      "slender human figures the size of a hand",
+      "translucent gossamer wings catching the light",
+      "trailing motes of pollen"
+    ],
+    "action": "hovering above a glowing foxglove, one reaching toward it"
+  },
+  "scene": {
+    "setting": "a mossy old-growth clearing, ferns and fallen bark",
+    "time": "golden hour",
+    "weather": "drifting mist"
+  },
+  "style": { "medium": "cinematic_still", "movement": "magic_realism", "detail": "high" },
+  "camera": { "shot": "scene", "lens": "85mm", "angle": "eye_level", "focus": "shallow_dof" },
+  "lighting": { "key": "god_rays" },
+  "palette": { "name": "forest", "contrast": "normal" },
+  "composition": { "aspect": "16:9", "rule": "thirds", "horizon": 0.62 },
+  "render": { "model": "juggernaut-xl", "variations": 1, "seed": 1848 },
+  "negative": {
+    "extra": ["insect, moth, butterfly, dragonfly, beetle", "dolls, statues, figurines"]
+  }
+}

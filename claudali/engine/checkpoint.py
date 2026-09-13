@@ -27,7 +27,10 @@ either hook, that test fails. Fix the hooks; do not loosen the test.
 
 A checkpoint is two files in ``<bundle>/checkpoint/``: ``state.json``, readable
 without torch by the API and UI, and ``state.pt``, holding only tensors and
-primitives so it loads with ``torch.load(weights_only=True)``.
+primitives so it loads with ``torch.load(weights_only=True)``. A job with a
+refiner or hi-res stage runs every variation's base stage before the next stage
+starts, so ``state.pt`` also carries the latents of variations waiting between
+stages (``ResumeState.staged``); format 2 added them.
 
 Stdlib only at import time: ``jobs``, ``bundle`` and ``api`` import this module.
 """
@@ -40,15 +43,20 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# Format 1 is a base-stage-only checkpoint, which reads the same way.
+READABLE_FORMATS = (1, 2)
 CHECKPOINT_DIR = "checkpoint"
 STATE_JSON = "state.json"
 STATE_PT = "state.pt"
+
+# The sampler stages a variation can go through, in order, with their names for people.
+STAGE_NAMES = {"base": "base", "refiner": "refiner", "hires": "hi-res"}
 
 # Packages whose version can change the numbers a sampler step produces.
 # accelerate only moves tensors between devices, so it is left out.
@@ -87,8 +95,9 @@ class StepState:
 class ResumeState:
     """Everything needed to carry on with a job.
 
-    ``step`` is None at a variation boundary: the variation then starts from
-    step 0 with its original seed, which is still exact.
+    ``step`` is None at a stage boundary: that stage of the variation then starts
+    from its first step with the original seed, which is still exact. ``stage``
+    is ``base``, ``refiner`` or ``hires``.
     """
 
     seeds: list[int]
@@ -100,10 +109,19 @@ class ResumeState:
     reason: str = "running"  # running | pause | abort | shutdown
     paused_at: Optional[str] = None
     step: Optional[StepState] = None
+    # Variations that finished a stage and wait for the next: {variation: (stage
+    # finished, latents on the CPU)}. Empty for a job with only the base stage.
+    staged: dict[int, tuple[str, Any]] = field(default_factory=dict)
+    # How many sampler steps the stage in progress runs, for display.
+    stage_steps: Optional[int] = None
 
     @property
     def next_step(self) -> int:
         return self.step.next_step if self.step is not None else 0
+
+    @property
+    def has_tensors(self) -> bool:
+        return self.step is not None or bool(self.staged)
 
     def to_json(self, job_id: Optional[str] = None) -> dict[str, Any]:
         return {
@@ -112,7 +130,12 @@ class ResumeState:
             "stage": self.stage,
             "variation": self.variation,
             "next_step": self.next_step,
+            "stage_steps": self.stage_steps,
             "has_step_state": self.step is not None,
+            "staged": [
+                {"variation": index, "stage": stage}
+                for index, (stage, _latents) in sorted(self.staged.items())
+            ],
             "seeds": list(self.seeds),
             "completed": sorted(self.completed),
             "reason": self.reason,
@@ -124,13 +147,16 @@ class ResumeState:
 
 def summarize_state(meta: dict[str, Any]) -> dict[str, Any]:
     """The part of ``state.json`` worth showing a person: no prompt, no fingerprint."""
+    compiled = meta.get("compiled") or {}
     return {
         "stage": meta.get("stage", "base"),
+        "stages": compiled.get("stages", ["base"]),
         "variation": meta.get("variation", 0),
         "next_step": meta.get("next_step", 0),
-        "steps": (meta.get("compiled") or {}).get("steps"),
+        "steps": meta.get("stage_steps") or compiled.get("steps"),
         "variations": len(meta.get("seeds", [])),
         "completed": list(meta.get("completed", [])),
+        "staged": list(meta.get("staged", [])),
         "mid_image": bool(meta.get("has_step_state")),
         "reason": meta.get("reason"),
         "paused_at": meta.get("paused_at"),
@@ -330,27 +356,32 @@ def checkpoint_dir(bundle_dir: Path | str) -> Path:
 
 
 def save_checkpoint(bundle_dir: Path | str, state: ResumeState, job_id: Optional[str] = None) -> Path:
-    """Write ``state.pt`` (when there is step state) and then ``state.json``.
+    """Write ``state.pt`` (when there are tensors to keep) and then ``state.json``.
 
     The metadata goes last and is the file a loader trusts: if the process dies
     between the two writes, the previous ``state.json`` still describes a
-    consistent checkpoint and the new tensors are ignored.
+    consistent checkpoint and the new tensors are refused as not matching it.
     """
     directory = checkpoint_dir(bundle_dir)
     directory.mkdir(parents=True, exist_ok=True)
     tensors = directory / STATE_PT
 
-    if state.step is not None:
+    if state.has_tensors:
         import torch
 
+        step = state.step
         payload = {
             "format": FORMAT_VERSION,
             "stage": state.stage,
             "variation": state.variation,
-            "next_step": state.step.next_step,
-            "latents": state.step.latents,
-            "scheduler": state.step.scheduler,
-            "generator": state.step.generator,
+            "next_step": state.next_step,
+            "latents": step.latents if step is not None else None,
+            "scheduler": step.scheduler if step is not None else None,
+            "generator": step.generator if step is not None else None,
+            "staged": {
+                index: {"stage": stage, "latents": latents}
+                for index, (stage, latents) in state.staged.items()
+            },
         }
         temporary = tensors.with_name(tensors.name + ".tmp")
         torch.save(payload, temporary)
@@ -358,7 +389,7 @@ def save_checkpoint(bundle_dir: Path | str, state: ResumeState, job_id: Optional
             raise OSError(f"could not write {tensors}: the file stayed locked")
 
     write_json(directory / STATE_JSON, state.to_json(job_id))
-    if state.step is None:
+    if not state.has_tensors:
         tensors.unlink(missing_ok=True)
     return directory
 
@@ -379,31 +410,43 @@ def load_checkpoint(bundle_dir: Path | str) -> ResumeState:
     meta = read_state(bundle_dir)
     if meta is None:
         raise FileNotFoundError(f"no checkpoint in {bundle_dir}: nothing to resume")
-    if meta.get("format") != FORMAT_VERSION:
+    if meta.get("format") not in READABLE_FORMATS:
         raise ValueError(
-            f"checkpoint format {meta.get('format')} is not the supported {FORMAT_VERSION}"
+            f"checkpoint format {meta.get('format')} is not one this version reads "
+            f"({', '.join(str(version) for version in READABLE_FORMATS)})"
         )
 
     step = None
-    if meta.get("has_step_state"):
+    staged: dict[int, tuple[str, Any]] = {}
+    if meta.get("has_step_state") or meta.get("staged"):
         import torch
 
         payload = torch.load(
             checkpoint_dir(bundle_dir) / STATE_PT, map_location="cpu", weights_only=True
         )
-        saved = (payload.get("stage"), payload.get("variation"), payload.get("next_step"))
-        expected = (meta.get("stage"), meta.get("variation"), meta.get("next_step"))
+        staged = {
+            int(index): (entry["stage"], entry["latents"])
+            for index, entry in (payload.get("staged") or {}).items()
+        }
+        saved = (payload.get("stage"), payload.get("variation"), payload.get("next_step"), sorted(staged))
+        expected = (
+            meta.get("stage"),
+            meta.get("variation"),
+            meta.get("next_step"),
+            sorted(entry["variation"] for entry in meta.get("staged", [])),
+        )
         if saved != expected:
             raise ValueError(
                 f"checkpoint/state.pt is at {saved} but state.json says {expected}; "
                 "the checkpoint was only half written and cannot be resumed exactly"
             )
-        step = StepState(
-            next_step=payload["next_step"],
-            latents=payload["latents"],
-            scheduler=payload["scheduler"],
-            generator=payload["generator"],
-        )
+        if meta.get("has_step_state"):
+            step = StepState(
+                next_step=payload["next_step"],
+                latents=payload["latents"],
+                scheduler=payload["scheduler"],
+                generator=payload["generator"],
+            )
 
     return ResumeState(
         seeds=list(meta["seeds"]),
@@ -415,6 +458,8 @@ def load_checkpoint(bundle_dir: Path | str) -> ResumeState:
         reason=meta.get("reason", "running"),
         paused_at=meta.get("paused_at"),
         step=step,
+        staged=staged,
+        stage_steps=meta.get("stage_steps"),
     )
 
 
@@ -483,6 +528,7 @@ def check_fingerprint(saved: dict[str, Any], current: dict[str, Any], force: boo
 
 
 __all__ = [
+    "STAGE_NAMES",
     "RenderAborted",
     "RenderController",
     "RenderPaused",

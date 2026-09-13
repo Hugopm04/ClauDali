@@ -21,12 +21,19 @@ def cmd_install(args: argparse.Namespace) -> int:
         force_cpu=args.cpu,
         skip_torch=args.skip_torch,
         skip_models=args.skip_models,
+        with_quality_models=args.with_quality_models,
     )
 
 
 def cmd_models(args: argparse.Namespace) -> int:
     if args.list:
-        from claudali.registry import CATALOG, PROFILES, profile_size_gb
+        from claudali.registry import (
+            CATALOG,
+            PROFILES,
+            QUALITY_MODELS,
+            profile_size_gb,
+            quality_models_size_gb,
+        )
 
         for entry in CATALOG.values():
             state = "installed" if entry.is_installed() else "-"
@@ -35,6 +42,10 @@ def cmd_models(args: argparse.Namespace) -> int:
         print()
         for name in PROFILES:
             print(f"  profile {name:9s} {profile_size_gb(name):5.2f} GB")
+        print(
+            f"  quality models    {quality_models_size_gb():5.2f} GB  "
+            f"({', '.join(QUALITY_MODELS)}; install --with-quality-models)"
+        )
         return 0
 
     if not args.add:
@@ -91,6 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
     install_cmd.add_argument("--cpu", action="store_true", help="force the CPU build of PyTorch")
     install_cmd.add_argument("--skip-torch", action="store_true", help="leave PyTorch as it is")
     install_cmd.add_argument("--skip-models", action="store_true", help="do not download weights")
+    install_cmd.add_argument(
+        "--with-quality-models",
+        action="store_true",
+        help=(
+            "also download the optional SDXL refiner (~6.25 GB) and Real-ESRGAN x4 (~0.07 GB), "
+            "used by refiner.enabled, hires.upscaler and render.quality 'max'"
+        ),
+    )
     install_cmd.set_defaults(func=cmd_install)
 
     models_cmd = sub.add_parser("models", help="add or list model weights")

@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from claudali import registry
 from claudali.__main__ import pause_on_interrupt
 from claudali.bundle import BundleWriter, read_bundle
 from claudali.compiler import CompiledPrompt, _assemble, compile_spec, load_vocabulary
@@ -44,7 +45,8 @@ from claudali.engine.checkpoint import (
     restore_scheduler_state,
     save_checkpoint,
 )
-from claudali.engine.pipelines import _plan_cudnn, _should_upcast_vae
+from claudali.engine.decode import _run_on_cpu, cpu_need_gb, plan_vae_decode
+from claudali.engine.pipelines import _plan_cudnn, _plan_offload, _should_upcast_vae
 from claudali.engine.render import RenderedImage, RenderResult
 from claudali.jobs import JobQueue, JobStatus, QueueFull
 from claudali.engine.regional import grid_for
@@ -917,11 +919,31 @@ def _tiny_sdxl(sampler: str):
     Prompt embeddings are passed in directly, so no tokenizer, text encoder,
     weights or network is needed. The time-embedding input is 6 * 8 + 32.
     """
-    torch = pytest.importorskip("torch")
     diffusers = pytest.importorskip("diffusers")
     from claudali.engine.pipelines import _build_scheduler
 
-    torch.manual_seed(0)
+    unet, vae = _tiny_unet_and_vae(0)
+    pipe = diffusers.StableDiffusionXLPipeline(
+        vae=vae,
+        text_encoder=None,
+        text_encoder_2=None,
+        tokenizer=None,
+        tokenizer_2=None,
+        unet=unet,
+        scheduler=diffusers.EulerDiscreteScheduler(),
+        add_watermarker=False,
+    )
+    pipe.set_progress_bar_config(disable=True)
+    assert _build_scheduler(pipe, sampler) == []
+    return pipe
+
+
+def _tiny_unet_and_vae(seed: int):
+    """A tiny SDXL UNet and VAE, random but the same for the same ``seed``."""
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+
+    torch.manual_seed(seed)
     unet = diffusers.UNet2DConditionModel(
         block_out_channels=(32, 64),
         layers_per_block=2,
@@ -947,19 +969,7 @@ def _tiny_sdxl(sampler: str):
         up_block_types=["UpDecoderBlock2D"] * 2,
         latent_channels=4,
     )
-    pipe = diffusers.StableDiffusionXLPipeline(
-        vae=vae,
-        text_encoder=None,
-        text_encoder_2=None,
-        tokenizer=None,
-        tokenizer_2=None,
-        unet=unet,
-        scheduler=diffusers.EulerDiscreteScheduler(),
-        add_watermarker=False,
-    )
-    pipe.set_progress_bar_config(disable=True)
-    assert _build_scheduler(pipe, sampler) == []
-    return pipe
+    return unet, vae
 
 
 def _tiny_call() -> dict:
@@ -1225,3 +1235,387 @@ def test_a_saved_spec_loads_back_with_what_was_inferred(tmp_path):
     restarted = _queue()
     restarted.restore(tmp_path / "queue.json")
     assert compile_spec(restarted.list()[0].spec).steps == 34
+
+
+# ---------------------------------------------------------------------------
+# Quality options: the VAE decode policy, precision, the refiner and the hi-res pass
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def quality_models(monkeypatch):
+    """Pretend the refiner and Real-ESRGAN are installed, or not, without touching models/."""
+    state = {"refiner": True, "upscaler": True}
+    monkeypatch.setattr(
+        registry,
+        "refiner_problem",
+        lambda model_id: None if state["refiner"] else f"the refiner '{model_id}' is not installed",
+    )
+    monkeypatch.setattr(
+        registry,
+        "upscaler_problem",
+        lambda model_id="realesrgan-x4": None if state["upscaler"] else "it is not installed",
+    )
+    return state
+
+
+def test_auto_decode_goes_to_the_cpu_only_with_the_ram_for_it():
+    """The agreed default: CPU fp32 untiled when free RAM covers it, GPU tiled otherwise."""
+    need = cpu_need_gb(1344, 768)
+    assert need == round(5.6 * 1344 * 768 / 1e6 + 1.0, 1)
+
+    roomy = plan_vae_decode("auto", 1344, 768, free_gb=need + 0.5)
+    assert (roomy.device, roomy.tiled) == ("cpu", False)
+
+    # 1.3 GB is what was free on the target laptop after a pipeline load and a render.
+    tight = plan_vae_decode("auto", 1344, 768, free_gb=1.3)
+    assert (tight.device, tight.tiled) == ("gpu", True)
+    assert tight.warnings == [], "a fallback auto chose is a note, not a warning"
+    assert any("GPU with tiling" in note for note in tight.notes)
+
+
+def test_unmeasured_ram_never_picks_the_cpu_decode():
+    """An unknown must not choose the path that can run the machine out of memory."""
+    plan = plan_vae_decode("auto", 1024, 1024, free_gb=None)
+    assert (plan.device, plan.tiled) == ("gpu", True)
+    assert any("could not be measured" in note for note in plan.notes)
+
+
+def test_forced_decode_modes_ignore_the_ram():
+    forced = plan_vae_decode("cpu", 1344, 768, free_gb=0.5)
+    assert (forced.device, forced.tiled) == ("cpu", False)
+    assert any("paged" in note for note in forced.notes)
+    assert (plan_vae_decode("gpu", 1344, 768, 99.0).device, plan_vae_decode("gpu", 1344, 768, 99.0).tiled) == ("gpu", False)
+    assert plan_vae_decode("gpu_tiled", 1344, 768, 99.0).tiled is True
+
+    odd = plan_vae_decode("fastest", 1024, 1024, free_gb=99.0)
+    assert odd.mode == "auto" and odd.device == "cpu" and len(odd.warnings) == 1
+
+
+def test_a_cpu_decode_that_runs_out_of_ram_retries_tiled_and_says_so():
+    """Forced, the fallback is a warning; chosen by auto, a note. Both keep fp32 on the CPU."""
+
+    class FakeVae:
+        use_tiling = False
+
+        def enable_tiling(self):
+            self.use_tiling = True
+
+        def disable_tiling(self):
+            self.use_tiling = False
+
+    for mode, channel in (("cpu", "warnings"), ("auto", "notes")):
+        vae = FakeVae()
+
+        def run(vae=vae):
+            if not vae.use_tiling:
+                raise RuntimeError("DefaultCPUAllocator: not enough memory: you tried to allocate 9 GB")
+            return "decoded"
+
+        plan = plan_vae_decode(mode, 1344, 768, free_gb=99.0)
+        warnings, notes = [], []
+        assert _run_on_cpu(run, vae, plan, "decode", "1344x768", warnings, notes) == ("decoded", True)
+        said = warnings if channel == "warnings" else notes
+        assert any("ran out of RAM" in message for message in said), mode
+        assert vae.use_tiling is False, "the CPU VAE is left untiled for the next image"
+
+    with pytest.raises(ValueError):
+        _run_on_cpu(lambda: (_ for _ in ()).throw(ValueError("not memory")), FakeVae(),
+                    plan_vae_decode("cpu", 64, 64, 1.0), "decode", "64x64", [], [])
+
+
+def test_latents_waiting_on_the_cpu_decode_on_the_gpu_path():
+    """Regression: staged latents reached vae.decode on the CPU and in the wrong dtype.
+
+    The hi-res pass decodes latents the base stage left on the CPU. Under offload
+    the hook moves the VAE, not its input, so the GPU path must move them itself.
+    Found on the GPU as "Input type (float) and bias type (Half)"; a float64 VAE
+    reproduces the dtype half of it on the CPU.
+    """
+    torch = pytest.importorskip("torch")
+    from diffusers.image_processor import VaeImageProcessor
+
+    from claudali.engine.decode import decode
+
+    _unet, vae = _tiny_unet_and_vae(0)
+    vae = vae.double()
+    pipe = SimpleNamespace(
+        vae=vae, image_processor=VaeImageProcessor(vae_scale_factor=2), vae_scale_factor=2,
+        watermark=None, _execution_device=torch.device("cpu"),
+    )
+    latents = torch.randn(1, 4, 16, 16, generator=torch.Generator().manual_seed(0))  # float32
+    image, record, _warnings, _notes = decode(pipe, latents, plan_vae_decode("gpu", 32, 32, None), lambda: None)
+    assert image.size == (32, 32)
+    assert (record["device"], record["precision"], record["tiled"]) == ("gpu", "float64", False)
+
+
+def test_fp32_on_a_small_card_switches_to_sequential_offload():
+    mode, warnings, notes = _plan_offload("model", "float32", 6.0)
+    assert mode == "sequential" and warnings == []
+    assert any("sequential CPU offload" in note and "measured" in note for note in notes)
+    assert _plan_offload("model", "float16", 6.0) == ("model", [], [])
+    assert _plan_offload("model", "float32", 24.0)[0] == "model"
+
+    mode, warnings, _notes = _plan_offload("fast", "float16", 6.0)
+    assert mode == "model" and len(warnings) == 1
+
+
+def test_the_max_preset_turns_on_every_quality_option(quality_models):
+    compiled = compile_spec(minimal(render={"quality": "max", "model": "sdxl-base"}))
+    assert (compiled.precision, compiled.vae_decode) == ("float32", "cpu")
+    assert compiled.refiner == {
+        "model": "sdxl-refiner", "handoff": 0.8, "aesthetic_score": 6.0, "negative_aesthetic_score": 2.5,
+    }
+    assert compiled.hires["upscaler"] == "realesrgan-x4"
+    assert (compiled.hires["width"], compiled.hires["height"]) == (1536, 1536)
+    assert compiled.stages == ["base", "refiner", "hires"]
+    assert not any("refiner" in warning or "hi-res" in warning for warning in compiled.warnings)
+    assert any("render.quality 'max' turned on" in note for note in compiled.notes)
+
+    # A preset for quality, not for sampling.
+    standard = compile_spec(minimal(render={"model": "sdxl-base"}))
+    assert (compiled.steps, compiled.cfg, compiled.sampler) == (standard.steps, standard.cfg, standard.sampler)
+
+
+def test_explicit_quality_fields_beat_the_max_preset(quality_models):
+    compiled = compile_spec(
+        minimal(
+            render={"quality": "max", "model": "sdxl-base", "precision": "fp16", "vae_decode": "gpu_tiled"},
+            refiner={"enabled": False},
+            hires={"upscaler": "lanczos", "scale": 1.25},
+        )
+    )
+    assert (compiled.precision, compiled.vae_decode, compiled.refiner) == ("float16", "gpu_tiled", None)
+    assert compiled.hires["upscaler"] == "lanczos" and compiled.hires["width"] == 1280
+    turned_on = next(note for note in compiled.notes if "turned on" in note)
+    assert "hi-res" in turned_on and "fp32" not in turned_on and "refiner" not in turned_on
+
+
+def test_the_max_preset_says_what_it_could_not_turn_on(quality_models, tmp_path):
+    quality_models.update(refiner=False, upscaler=False)
+    compiled = compile_spec(minimal(render={"quality": "max", "model": "sdxl-base"}))
+    assert compiled.refiner is None and compiled.hires["upscaler"] == "lanczos"
+    assert any("would add the refiner" in warning for warning in compiled.warnings)
+    assert any("Lanczos" in note for note in compiled.notes)
+
+    quality_models["refiner"] = True
+    source = tmp_path / "source.png"
+    Image.new("RGB", (64, 64)).save(source)
+    with_init = compile_spec(minimal(render={"quality": "max"}, init={"image": str(source)}))
+    assert with_init.refiner is None
+    assert any("left the refiner off" in note for note in with_init.notes), "a decision, so a note"
+
+
+def test_a_refiner_that_cannot_run_is_refused_not_dropped(quality_models, tmp_path):
+    """Explicit beats inferred, and nothing is silently dropped: the render stops before loading."""
+    from claudali.engine.render import render
+
+    quality_models["refiner"] = False
+    missing = minimal(render={"model": "sdxl-base"}, refiner={"enabled": True})
+    compiled = compile_spec(missing)
+    assert compiled.refiner is not None
+    assert any("rendering this spec stops" in warning for warning in compiled.warnings)
+    with pytest.raises(FileNotFoundError, match="not installed"):
+        render(missing)
+
+    quality_models["refiner"] = True
+    source = tmp_path / "source.png"
+    Image.new("RGB", (64, 64)).save(source)
+    with pytest.raises(ValueError, match="init images"):
+        render(minimal(render={"model": "sdxl-base"}, refiner={"enabled": True}, init={"image": str(source)}))
+    with pytest.raises(ValueError, match="0 steps"):
+        render(minimal(hires={"enabled": True, "steps": 2, "strength": 0.2}))
+
+
+def test_standard_quality_follows_the_server_settings(monkeypatch):
+    from claudali.config import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "vae_decode", "gpu")
+    compiled = compile_spec(minimal())
+    assert (compiled.quality, compiled.vae_decode, compiled.refiner, compiled.hires) == ("standard", "gpu", None, None)
+    assert compiled.stages == ["base"]
+    assert CompiledPrompt.from_dict(json.loads(json.dumps(compiled.to_dict()))).to_dict() == compiled.to_dict()
+
+    monkeypatch.setattr(SETTINGS, "vae_decode", "sideways")
+    assert any("CLAUDALI_VAE_DECODE" in warning for warning in compile_spec(minimal()).warnings)
+
+    # A prompt frozen before these options existed decoded on the GPU tiled, and resumes so.
+    old = {key: value for key, value in compiled.to_dict().items() if key not in {"quality", "precision", "vae_decode", "refiner", "hires", "stages"}}
+    assert CompiledPrompt.from_dict(old).vae_decode == "gpu_tiled"
+
+
+def test_a_saved_max_spec_keeps_only_what_was_set():
+    """The preset resolves in the compiler, so a saved spec does not come back with it spelled out."""
+    saved = minimal(render={"quality": "max"}).model_dump(mode="json", exclude_unset=True)
+    assert saved["render"] == {"quality": "max"}
+    assert "refiner" not in saved and "hires" not in saved
+
+
+def test_quality_models_are_optional_and_never_a_base_model():
+    for profile in registry.PROFILES.values():
+        assert not set(profile) & set(registry.QUALITY_MODELS)
+    assert {registry.get(model_id).kind for model_id in registry.QUALITY_MODELS} == {"refiner", "upscaler"}
+    with pytest.raises(ValueError, match="not a base checkpoint"):
+        registry.resolve_checkpoint("sdxl-refiner")
+
+
+def test_upscaler_tiles_cover_the_image_and_blend_back_whole():
+    torch = pytest.importorskip("torch")
+    from claudali.engine.upscale import OVERLAP, TILE, _ramp, _starts
+
+    for size in (100, 256, 257, 1344):
+        starts = _starts(size, TILE, OVERLAP)
+        assert starts[0] == 0 and min(size, starts[-1] + TILE) == size
+        assert all(later - earlier <= TILE - OVERLAP for earlier, later in zip(starts, starts[1:]))
+
+    # Constant tiles blended by their ramps must give the constant back everywhere.
+    height, width = 300, 530
+    output, weight = torch.zeros(1, 1, height, width), torch.zeros(1, 1, height, width)
+    for top in _starts(height, TILE, OVERLAP):
+        for left in _starts(width, TILE, OVERLAP):
+            rows, columns = min(TILE, height - top), min(TILE, width - left)
+            ramp = _ramp(rows, columns, OVERLAP)
+            assert ramp.min() > 0
+            output[:, :, top : top + rows, left : left + columns] += 0.7 * ramp
+            weight[:, :, top : top + rows, left : left + columns] += ramp
+    assert torch.allclose(output / weight, torch.full_like(output, 0.7))
+
+
+def test_latents_waiting_between_stages_survive_the_checkpoint(tmp_path):
+    torch = pytest.importorskip("torch")
+    compiled = compile_spec(minimal()).to_dict()
+    waiting = {0: ("refiner", torch.randn(1, 4, 8, 8).half()), 1: ("base", torch.randn(1, 4, 8, 8).half())}
+    save_checkpoint(
+        tmp_path,
+        ResumeState(
+            seeds=[1, 2, 3], variation=2, completed=[], compiled=compiled, fingerprint={},
+            stage="base", staged=waiting, stage_steps=26,
+        ),
+    )
+    meta = json.loads((tmp_path / "checkpoint" / "state.json").read_text(encoding="utf-8"))
+    assert meta["format"] == 2 and meta["has_step_state"] is False
+    assert meta["staged"] == [{"variation": 0, "stage": "refiner"}, {"variation": 1, "stage": "base"}]
+
+    loaded = load_checkpoint(tmp_path)  # torch.load(weights_only=True) inside
+    assert (loaded.step, loaded.stage_steps, sorted(loaded.staged)) == (None, 26, [0, 1])
+    for index, (stage, latents) in waiting.items():
+        assert loaded.staged[index][0] == stage and torch.equal(loaded.staged[index][1], latents)
+
+    # A format-1 checkpoint, from before quality stages, still reads.
+    save_checkpoint(tmp_path, ResumeState(seeds=[1], variation=0, completed=[], compiled=compiled, fingerprint={}))
+    path = tmp_path / "checkpoint" / "state.json"
+    old = json.loads(path.read_text(encoding="utf-8"))
+    old["format"] = 1
+    for key in ("staged", "stage_steps"):
+        old.pop(key)
+    path.write_text(json.dumps(old), encoding="utf-8")
+    assert load_checkpoint(tmp_path).staged == {}
+
+
+def _tiny_loaded(kind: str, seed: int):
+    """A tiny base or refiner pipeline, wrapped as the loader would return it."""
+    diffusers = pytest.importorskip("diffusers")
+    from claudali.engine.pipelines import LoadedPipeline
+
+    unet, vae = _tiny_unet_and_vae(seed)
+    components = dict(
+        vae=vae, text_encoder=None, text_encoder_2=None, tokenizer=None, tokenizer_2=None,
+        unet=unet, scheduler=diffusers.EulerDiscreteScheduler(), add_watermarker=False,
+    )
+    if kind == "base":
+        pipe = diffusers.StableDiffusionXLPipeline(**components)
+    else:
+        # The real refiner asks for aesthetic scores; the tiny UNet's time embedding has no room for them.
+        pipe = diffusers.StableDiffusionXLImg2ImgPipeline(**components, requires_aesthetics_score=False)
+    pipe.set_progress_bar_config(disable=True)
+    pipe.enable_attention_slicing()  # as _apply_memory_strategy does for every load
+    return LoadedPipeline(
+        model_id=f"tiny-{kind}", controlnet_id=None, pipe=pipe, base_scheduler=pipe.scheduler, kind=kind
+    )
+
+
+def test_a_render_paused_between_stages_resumes_bit_for_bit(tmp_path, monkeypatch, quality_models):
+    """The refiner and hi-res stages, paused inside the refiner and resumed from disk.
+
+    render() itself runs, with tiny random pipelines standing in for the loaded
+    models. So what this locks is the stage loop: every base stage before the
+    refiner loads, latents carried between stages through the checkpoint, the
+    decode, upscale and encode around the hi-res pass, and a resume that runs
+    nothing twice. The refiner has never run on hardware; this is its only lock.
+    """
+    torch = pytest.importorskip("torch")
+    import dataclasses
+
+    from claudali.engine import render as engine
+
+    base, refiner = _tiny_loaded("base", 0), _tiny_loaded("refiner", 1)
+    call = _tiny_call()
+    embeds = {key: call[key] for key in call if key.endswith("embeds")}
+    monkeypatch.setattr(engine, "load_pipeline", lambda *args, **kwargs: base)
+    monkeypatch.setattr(engine, "load_refiner", lambda *args, **kwargs: refiner)
+    monkeypatch.setattr(engine, "_encode_prompts", lambda loaded, compiled: (dict(embeds), []))
+    monkeypatch.setattr(engine, "_encode_refiner_prompts", lambda loaded, compiled: (dict(embeds), []))
+    monkeypatch.setattr(engine, "_fingerprint", lambda *args, **kwargs: {"pipelines": "tiny"})
+    monkeypatch.setattr(engine, "device_report", lambda: {})
+    monkeypatch.setattr(engine, "resident", lambda: None)
+
+    spec = minimal(
+        render={"model": "sdxl-base", "seed": 11, "variations": 2, "steps": 4, "sampler": "euler", "vae_decode": "gpu"},
+        refiner={"enabled": True, "handoff": 0.5},
+        hires={"enabled": True, "strength": 0.5},
+    )
+    # The tiny UNet works at 16x16 latents, far below the smallest size a spec allows.
+    compiled = compile_spec(spec)
+    compiled = dataclasses.replace(compiled, width=32, height=32, hires={**compiled.hires, "width": 48, "height": 48})
+    assert compiled.stages == ["base", "refiner", "hires"]
+
+    def run(**options):
+        images = {}
+        result = engine.render(
+            spec, compiled=compiled,
+            on_variation=lambda rendered: images.__setitem__(rendered.index, np.asarray(rendered.image)),
+            **options,
+        )
+        return images, result
+
+    seen = []
+    reference, _result = run(progress=lambda update: seen.append((update.stage, update.variation, update.done, update.total)))
+    assert sorted(reference) == [0, 1] and reference[0].shape == (48, 48, 3)
+    # Batched: both base stages, then both refiner stages, then both hi-res passes.
+    order = [(stage, variation) for stage, variation, _done, _total in seen]
+    assert list(dict.fromkeys(order)) == [
+        ("base", 0), ("base", 1), ("refiner", 0), ("refiner", 1), ("hires", 0), ("hires", 1),
+    ]
+    done = [entry[2] for entry in seen]
+    assert done == sorted(done) and done[-1] == seen[-1][3], "progress only rises, and ends full"
+
+    controller = RenderController()
+
+    def pause_in_refiner(update):
+        if (update.stage, update.variation, update.step) == ("refiner", 1, 1):
+            controller.pause_requested = True
+
+    with pytest.raises(RenderPaused) as caught:
+        run(controller=controller, progress=pause_in_refiner)
+    state = caught.value.state
+    assert (state.stage, state.variation, state.next_step) == ("refiner", 1, 1)
+    assert {index: stage for index, (stage, _latents) in state.staged.items()} == {0: "refiner", 1: "base"}
+    save_checkpoint(tmp_path, state)
+
+    calls = {"base": 0, "refiner": 0}
+    hooks = [
+        pipe.unet.register_forward_pre_hook(lambda _m, _a, name=name: calls.__setitem__(name, calls[name] + 1))
+        for name, pipe in (("base", base.pipe), ("refiner", refiner.pipe))
+    ]
+    try:
+        resumed, result = run(resume=load_checkpoint(tmp_path))
+    finally:
+        for hook in hooks:
+            hook.remove()
+
+    # euler over 4 steps visits timesteps 999, 666, 333, 0. The handoff at 0.5 gives
+    # the base 2 and the refiner 2; the hi-res pass at strength 0.5 runs 2.
+    assert calls == {"refiner": 1, "base": 2 * 2}, "a resume must not re-run finished stages"
+    for index in (0, 1):
+        assert np.array_equal(resumed[index], reference[index]), index
+    assert any("refiner stage of variation 2 of 2 at step 1" in note for note in result.notes)

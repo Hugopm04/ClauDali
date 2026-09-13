@@ -30,6 +30,11 @@
 .PARAMETER SkipModels
     Set up the environment without downloading any weights.
 
+.PARAMETER QualityModels
+    Also download the optional quality models on top of the profile: the SDXL
+    refiner (~6.25 GB) and Real-ESRGAN x4 (~0.07 GB). They are used by
+    refiner.enabled, hires.upscaler "realesrgan-x4" and render.quality "max".
+
 .EXAMPLE
     .\install.ps1
     Installs the standard profile.
@@ -37,6 +42,10 @@
 .EXAMPLE
     .\install.ps1 -ModelProfile full
     Installs everything, including both fine-tunes.
+
+.EXAMPLE
+    .\install.ps1 -ModelProfile full -QualityModels
+    Installs everything, plus the refiner and the Real-ESRGAN upscaler.
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +54,8 @@ param(
     [switch]$RecreateVenv,
     [switch]$Cpu,
     [switch]$SkipTorch,
-    [switch]$SkipModels
+    [switch]$SkipModels,
+    [switch]$QualityModels
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,6 +103,7 @@ if ($RecreateVenv) { $forwarded += '--recreate-venv' }
 if ($Cpu)          { $forwarded += '--cpu' }
 if ($SkipTorch)    { $forwarded += '--skip-torch' }
 if ($SkipModels)   { $forwarded += '--skip-models' }
+if ($QualityModels) { $forwarded += '--with-quality-models' }
 
 & $python.Exe @($python.Args + $forwarded)
 $code = $LASTEXITCODE

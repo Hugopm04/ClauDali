@@ -63,6 +63,10 @@ def cmd_compile(args: argparse.Namespace) -> int:
     print(f"model    : {compiled.model}")
     print(f"size     : {compiled.width}x{compiled.height}")
     print(f"sampling : {compiled.steps} steps, cfg {compiled.cfg}, {compiled.sampler}")
+    print(
+        f"quality  : {compiled.quality}, {compiled.precision}, VAE decode {compiled.vae_decode}, "
+        f"stages {' -> '.join(compiled.stages)}"
+    )
     if compiled.tokens is not None:
         about = "" if compiled.tokens.exact else "~"
         anchored = (
@@ -115,15 +119,16 @@ def _print_variations(bundle: Any) -> None:
 
 def _run_render(writer: Any, compiled: Any = None, resume: Any = None, force: bool = False) -> int:
     """Render into a bundle writer, turning Ctrl+C into a pause and a second one into an abort."""
-    from .engine.checkpoint import RenderController, RenderPaused, ResumeMismatch
+    from .engine.checkpoint import STAGE_NAMES, RenderController, RenderPaused, ResumeMismatch
     from .engine.render import render
 
-    def progress(step: int, total: int, variation: int, variations: int) -> None:
-        share = (variation * total + step) / max(1, total * variations)
+    def progress(update: Any) -> None:
+        share = min(1.0, update.done / update.total) if update.total > 0 else 0.0
         bar = "#" * int(share * 30)
+        stage = STAGE_NAMES.get(update.stage, update.stage)
         sys.stdout.write(
-            f"\r  [{bar:<30}] {share*100:5.1f}%  variation {variation+1}/{variations}"
-            f"  step {step}/{total}"
+            f"\r  [{bar:<30}] {share*100:5.1f}%  {stage}  variation {update.variation+1}"
+            f"/{update.variations}  step {update.step}/{update.steps}   "
         )
         sys.stdout.flush()
 
@@ -144,9 +149,10 @@ def _run_render(writer: Any, compiled: Any = None, resume: Any = None, force: bo
     except RenderPaused as stopped:
         bundle = writer.pause(stopped)
         state = stopped.state
-        steps = state.compiled.get("steps")
+        steps = state.stage_steps or state.compiled.get("steps")
+        stage = STAGE_NAMES.get(state.stage, state.stage)
         print(
-            f"\n\nPaused at variation {state.variation + 1}/{len(state.seeds)}, "
+            f"\n\nPaused in the {stage} stage at variation {state.variation + 1}/{len(state.seeds)}, "
             f"step {state.next_step}/{steps}. {len(bundle.variations)} image(s) saved."
         )
         _print_variations(bundle)
@@ -198,7 +204,7 @@ def cmd_render(args: argparse.Namespace) -> int:
 def cmd_resume(args: argparse.Namespace) -> int:
     """Carry on with a paused, aborted or interrupted bundle."""
     from .bundle import BundleWriter
-    from .engine.checkpoint import load_checkpoint, read_state
+    from .engine.checkpoint import STAGE_NAMES, load_checkpoint, read_state
 
     directory = Path(args.bundle)
     if read_state(directory) is None:
@@ -208,9 +214,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
     writer = BundleWriter.open(directory)
     resume = load_checkpoint(directory)
     resume.completed = sorted(set(resume.completed) | set(writer.completed_indices()))
-    where = f"variation {resume.variation + 1}/{len(resume.seeds)}"
+    where = f"the {STAGE_NAMES.get(resume.stage, resume.stage)} stage of variation {resume.variation + 1}/{len(resume.seeds)}"
     if resume.step is not None:
-        where += f", step {resume.next_step}/{resume.compiled.get('steps')}"
+        where += f", step {resume.next_step}/{resume.stage_steps or resume.compiled.get('steps')}"
     print(f"Resuming {where}. {len(resume.completed)} image(s) already done.")
     return _run_render(writer, resume=resume, force=args.force)
 
@@ -252,7 +258,14 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 
 def cmd_models(_args: argparse.Namespace) -> int:
-    from .registry import CATALOG, PROFILES, custom_checkpoints, profile_size_gb
+    from .registry import (
+        CATALOG,
+        PROFILES,
+        QUALITY_MODELS,
+        custom_checkpoints,
+        profile_size_gb,
+        quality_models_size_gb,
+    )
 
     for entry in CATALOG.values():
         state = "installed" if entry.is_installed() else "not installed"
@@ -266,6 +279,10 @@ def cmd_models(_args: argparse.Namespace) -> int:
     print("\nProfiles:")
     for name in PROFILES:
         print(f"  {name:10s} {profile_size_gb(name):5.2f} GB  ({', '.join(PROFILES[name])})")
+    print(
+        f"  {'+quality':10s} {quality_models_size_gb():5.2f} GB  ({', '.join(QUALITY_MODELS)}; "
+        "installer install --with-quality-models)"
+    )
     return 0
 
 
