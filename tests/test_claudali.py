@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -240,6 +241,41 @@ def test_region_masks_are_keyed_by_role():
         assert np.asarray(mask).max() == 255
 
 
+def inpaint_layer_spec(tmp_path: Path, **init) -> SceneSpec:
+    """The layered spec without control, inpainting over a source image on disk."""
+    source = tmp_path / "source.png"
+    Image.new("RGB", (1216, 832), (90, 110, 130)).save(source)
+    data = layered_spec().model_dump(mode="json", exclude_unset=True)
+    data.pop("control")
+    data["init"] = {"image": str(source), **init}
+    return load_spec(data)
+
+
+def test_init_mask_layer_inpaints_the_named_layer(tmp_path):
+    """`build_region_masks` promised this for months and was read by nothing but a test."""
+    from claudali.engine.render import _load_init_images, _select_task
+
+    spec = inpaint_layer_spec(tmp_path, mask_layer="tower", mask_blur=0)
+    assert _select_task(spec) == "inpaint"
+    image, mask = _load_init_images(spec)
+    assert image.size == mask.size == spec.resolution()
+    assert np.array_equal(np.asarray(mask), np.asarray(build_region_masks(spec)["tower"]))
+    # The layers are what the mask is made of, so they are not unused here.
+    assert not any("composition.layers" in warning for warning in compile_spec(spec).warnings)
+
+
+def test_init_mask_layer_must_name_exactly_one_layer(tmp_path):
+    with pytest.raises(Exception, match="names no layer"):
+        inpaint_layer_spec(tmp_path, mask_layer="lighthouse")
+    with pytest.raises(Exception, match="alternatives"):
+        inpaint_layer_spec(tmp_path, mask_layer="tower", mask=str(tmp_path / "source.png"))
+
+    data = inpaint_layer_spec(tmp_path, mask_layer="rock").model_dump(mode="json", exclude_unset=True)
+    data["composition"]["layers"][0]["role"] = "rock"
+    with pytest.raises(Exception, match="matches 2 layers"):
+        load_spec(data)
+
+
 # ---------------------------------------------------------------------------
 # Compositing and postprocess
 # ---------------------------------------------------------------------------
@@ -391,6 +427,7 @@ def test_cudnn_is_disabled_when_it_returns_nans():
     assert (status.broken, status.disabled, status.survives_workaround) == (True, True, False)
     assert switches == [False]
     assert any("cuDNN is disabled for this process" in note for note in status.notes)
+    assert status.warnings == (), "a workaround that worked is a note, not a warning"
 
 
 def test_cudnn_is_restored_when_disabling_it_does_not_help():
@@ -398,6 +435,7 @@ def test_cudnn_is_restored_when_disabling_it_does_not_help():
     status, switches = _cudnn_plan("auto", [True, True])
     assert (status.broken, status.disabled, status.survives_workaround) == (True, False, True)
     assert switches == [False, True]
+    assert any("left on" in warning for warning in status.warnings) and status.notes == ()
 
 
 def test_cudnn_off_skips_the_measurement():
@@ -560,6 +598,21 @@ def test_packing_never_exceeds_one_chunk():
     pieces = [f"fragment number {index} with some filler words in it" for index in range(40)]
     for group in pack(pieces, anchor="small ethereal fairies"):
         assert count_content_tokens(", ".join(group))[0] <= CHUNK_CONTENT_TOKENS
+
+
+def test_plain_prompts_say_how_much_was_truncated():
+    """Without compel, diffusers keeps 77 tokens of each prompt and silently drops the rest."""
+    from claudali.engine.render import _encode_prompts
+
+    no_compel = SimpleNamespace(compel=None)
+    long = compile_spec(fairy_spec())
+    kwargs, warnings = _encode_prompts(no_compel, long)
+    assert kwargs == {"prompt": long.prompt, "negative_prompt": long.negative_prompt}
+    assert any("truncated" in warning and str(long.tokens.tokens) in warning for warning in warnings)
+
+    one_chunk = {**long.tokens.to_dict(), "chunks": 1}
+    short = CompiledPrompt.from_dict({**long.to_dict(), "tokens": one_chunk, "negative_tokens": one_chunk})
+    assert _encode_prompts(no_compel, short)[1] == []
 
 
 # ---------------------------------------------------------------------------
@@ -978,6 +1031,33 @@ def test_a_paused_render_resumes_bit_for_bit(tmp_path, sampler, pause_after):
     assert torch.equal(denoise(pipe, _tiny_call(), seed=42), reference)
 
 
+def test_every_sampler_builds_with_the_installed_packages():
+    """Regression: `lms` needed scipy, which no requirement installs, and failed at load."""
+    diffusers = pytest.importorskip("diffusers")
+    from claudali.engine.pipelines import SAMPLERS
+
+    base = diffusers.EulerDiscreteScheduler()
+    for class_name, kwargs in SAMPLERS.values():
+        getattr(diffusers, class_name).from_config(base.config, **kwargs)
+
+
+def test_a_sampler_is_built_from_the_checkpoint_scheduler_not_the_last_one():
+    """Regression: `euler` after `dpmpp_2m_karras` on the cached pipeline inherited Karras sigmas."""
+    diffusers = pytest.importorskip("diffusers")
+    from claudali.engine.pipelines import _build_scheduler
+
+    base = diffusers.EulerDiscreteScheduler()
+    pipe = SimpleNamespace(scheduler=base)
+    assert _build_scheduler(pipe, "dpmpp_2m_karras", base) == []
+    assert pipe.scheduler.config.use_karras_sigmas
+    assert _build_scheduler(pipe, "euler", base) == []
+    assert not pipe.scheduler.config.use_karras_sigmas
+
+    warnings = _build_scheduler(pipe, "no_such_sampler", base)
+    assert len(warnings) == 1 and "unknown sampler" in warnings[0]
+    assert type(pipe.scheduler) is type(base) and pipe.scheduler is not base
+
+
 def test_first_ctrl_c_pauses_and_the_second_aborts():
     controller = RenderController()
     previous = signal.getsignal(signal.SIGINT)
@@ -1098,7 +1178,12 @@ def test_a_bundle_is_written_as_each_image_lands(tmp_path):
     assert Path(read_bundle(writer.directory)["contact_sheet"]).is_file()
 
     state = ResumeState(seeds=[5, 6, 7], variation=2, completed=[0, 1], compiled=compiled.to_dict(), fingerprint={})
-    writer.pause(RenderPaused(state, RenderResult(images=[], compiled=compiled, notes=["a note"], duration_s=12.5)))
+    writer.pause(
+        RenderPaused(
+            state,
+            RenderResult(images=[], compiled=compiled, warnings=["a warning"], notes=["a note"], duration_s=12.5),
+        )
+    )
     manifest = read_bundle(writer.directory)
     assert manifest["status"] == "paused"
     assert manifest["checkpoint"]["variation"] == 2 and manifest["checkpoint"]["reason"] == "pause"
@@ -1106,8 +1191,37 @@ def test_a_bundle_is_written_as_each_image_lands(tmp_path):
     reopened = BundleWriter.open(writer.directory)
     assert reopened.completed_indices() == [0, 1]
     reopened.add_variation(RenderedImage(image=swatch(), seed=7, index=2))
-    reopened.complete(RenderResult(images=[], compiled=compiled, notes=["a note"], duration_s=3.0))
+    reopened.complete(
+        RenderResult(images=[], compiled=compiled, warnings=["a warning"], notes=["a note"], duration_s=3.0)
+    )
     manifest = read_bundle(writer.directory)
     assert (manifest["status"], manifest["duration_s"], len(manifest["variations"])) == ("done", 15.5, 3)
-    assert manifest["notes"].count("a note") == 1
+    # Two channels, each holding one copy of what both sessions of the job said.
+    assert (manifest["warnings"], manifest["notes"]) == (["a warning"], ["a note"])
     assert not (writer.directory / "checkpoint").exists()
+
+
+def test_a_saved_spec_loads_back_with_what_was_inferred(tmp_path):
+    """Regression: saved specs wrote every schema default out as if it had been chosen.
+
+    Loaded back -- from history in the UI, or from runs/queue.json after a restart --
+    `steps: 30` and `cfg: 6.5` then beat the painterly intent's 34 and 7.5, and the
+    saved 1024x1024 beat whatever aspect was chosen afterwards.
+    """
+    spec = minimal(intent="painterly", render={"variations": 2, "seed": 9})
+    compiled = compile_spec(spec)
+    writer = BundleWriter.create(spec, compiled, "job12345", tmp_path / "bundle")
+    saved = json.loads((writer.directory / "spec.json").read_text(encoding="utf-8"))
+    again = compile_spec(load_spec(saved))
+    assert (again.steps, again.cfg, again.sampler) == (compiled.steps, compiled.cfg, compiled.sampler)
+    assert (again.steps, again.cfg) == (34, 7.5)
+
+    saved["composition"] = {"aspect": "16:9"}
+    assert load_spec(saved).resolution() == (1344, 768)
+
+    queue = _queue()
+    queue.submit(spec)
+    queue.save(tmp_path / "queue.json")
+    restarted = _queue()
+    restarted.restore(tmp_path / "queue.json")
+    assert compile_spec(restarted.list()[0].spec).steps == 34

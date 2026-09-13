@@ -70,6 +70,8 @@
 
   .warn-list { color: var(--accent); font-size: 12px; margin: 6px 0 0; padding-left: 18px; }
   .err-list { color: var(--err); font-size: 12px; margin: 6px 0 0; padding-left: 18px; }
+  .note-list { color: var(--muted); font-size: 12px; margin: 6px 0 0; padding-left: 18px; }
+  .warn-list li b, .note-list li b { margin-right: 6px; }
   .muted { color: var(--muted); }
   .hist { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 12.5px; }
   .hist:hover { color: var(--accent); }
@@ -105,6 +107,8 @@
       <legend>Subject</legend>
       <label>Primary</label>
       <textarea id="subject" placeholder="a lighthouse on a black basalt cliff"></textarea>
+      <label>Anchor (the subject alone, restated in every CLIP chunk)</label>
+      <input id="anchor" placeholder="the lighthouse">
       <label>Details (comma separated)</label>
       <input id="details" placeholder="salt-worn paint, one lit window">
       <label>Action</label>
@@ -201,9 +205,10 @@
       <button id="btn-example">Load example</button>
       <button id="btn-json">Show JSON</button>
     </div>
+    <div id="also-in-spec" class="muted hidden" style="font-size:11.5px;margin-top:10px"></div>
 
     <details style="margin-top:12px">
-      <summary>Raw spec JSON (editable — overrides the form)</summary>
+      <summary>Raw spec JSON (editable — Use this JSON renders it as written)</summary>
       <textarea id="json-spec" style="min-height:220px;margin-top:8px"></textarea>
       <button id="btn-apply-json" style="margin-top:6px">Use this JSON</button>
     </details>
@@ -242,12 +247,14 @@
       <h2 style="margin-top:10px">Negative</h2>
       <pre id="negative-text" class="muted"></pre>
       <ul class="warn-list hidden" id="prompt-warnings"></ul>
+      <ul class="note-list hidden" id="prompt-notes"></ul>
     </div>
 
     <div class="card hidden" id="card-images">
       <h2>Result</h2>
       <div class="grid" id="images"></div>
-      <ul class="warn-list hidden" id="render-notes"></ul>
+      <ul class="warn-list hidden" id="render-warnings"></ul>
+      <ul class="note-list hidden" id="render-notes"></ul>
     </div>
 
     <div class="card">
@@ -264,7 +271,7 @@ const $ = (id) => document.getElementById(id);
 const fileURL = (p) => `/api/file?path=${encodeURIComponent(p)}`;
 const esc = (text) => String(text ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const post = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-let VOCAB = null, EXAMPLES = [], exampleIndex = 0, pollTimer = null, currentJob = null, shownBundle = "";
+let VOCAB = null, SCHEMA = null, EXAMPLES = [], exampleIndex = 0, pollTimer = null, currentJob = null, shownBundle = "";
 // Statuses a job can still move on from without anyone acting.
 const LIVE = new Set(["queued", "running", "pausing"]);
 
@@ -306,84 +313,182 @@ async function api(path, options = {}) {
 
 /* ---------- spec assembly --------------------------------------------- */
 
+// Every spec field the form has an input for. `empty` is what the input shows
+// when a spec leaves the field out. The form edits only these paths; whatever
+// else a loaded spec holds goes to the render untouched.
+const FORM_FIELDS = [
+  { id: "intent", path: "intent", empty: "photoreal" },
+  { id: "subject", path: "subject.primary" },
+  { id: "anchor", path: "subject.anchor" },
+  { id: "details", path: "subject.details", type: "list" },
+  { id: "action", path: "subject.action" },
+  { id: "setting", path: "scene.setting" },
+  { id: "time", path: "scene.time" },
+  { id: "weather", path: "scene.weather" },
+  { id: "medium", path: "style.medium" },
+  { id: "movement", path: "style.movement" },
+  { id: "detail", path: "style.detail" },
+  { id: "descriptors", path: "style.descriptors", type: "list" },
+  { id: "shot", path: "camera.shot" },
+  { id: "lens", path: "camera.lens" },
+  { id: "angle", path: "camera.angle" },
+  { id: "focus", path: "camera.focus" },
+  { id: "lighting", path: "lighting.key" },
+  { id: "palette", path: "palette.name" },
+  { id: "contrast", path: "palette.contrast" },
+  { id: "aspect", path: "composition.aspect", empty: "1:1" },
+  { id: "rule", path: "composition.rule" },
+  { id: "horizon", path: "composition.horizon", type: "number" },
+  { id: "layers", path: "composition.layers", type: "json" },
+  { id: "control-mode", path: "control.mode", empty: "none" },
+  { id: "control-strength", path: "control.strength", type: "number", empty: 0.6 },
+  { id: "model", path: "render.model" },
+  { id: "sampler", path: "render.sampler" },
+  { id: "steps", path: "render.steps", type: "number" },
+  { id: "cfg", path: "render.cfg", type: "number" },
+  { id: "seed", path: "render.seed", type: "number" },
+  { id: "variations", path: "render.variations", type: "number", empty: 1 },
+];
+
+// The spec last loaded into the form, and what each input showed straight after.
+// An input still showing that leaves the spec's own value alone, which is what
+// stops form defaults (aspect 1:1, strength 0.6) overwriting a loaded spec's
+// values or adding fields it left out.
+let loadedSpec = null, loadedForm = {};
+
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function getPath(obj, path) {
+  return path.split(".").reduce((node, key) => (isObject(node) ? node[key] : undefined), obj);
+}
+
+function setPath(obj, path, value) {
+  const keys = path.split(".");
+  const last = keys.pop();
+  let node = obj;
+  for (const key of keys) {
+    if (!isObject(node[key])) node[key] = {};
+    node = node[key];
+  }
+  node[last] = value;
+}
+
+function deletePath(obj, path) {
+  const keys = path.split(".");
+  const last = keys.pop();
+  const node = keys.length ? getPath(obj, keys.join(".")) : obj;
+  if (isObject(node)) delete node[last];
+}
+
+// An input's content as a spec value, or undefined when it is blank.
+function readField(field) {
+  const raw = $(field.id).value.trim();
+  if (raw === "") return undefined;
+  if (field.type === "number") return Number(raw);
+  if (field.type === "list") {
+    const items = commaList(raw);
+    return items.length ? items : undefined;
+  }
+  if (field.type === "json") {
+    try { return JSON.parse(raw); }
+    catch (e) { throw new Error(`${field.path} JSON is invalid: ${e.message}`); }
+  }
+  return raw;
+}
+
+function writeField(field, value) {
+  const el = $(field.id);
+  if (value === undefined || value === null) value = field.empty ?? "";
+  let text = String(value);
+  if (field.type === "list" && Array.isArray(value)) text = value.join(", ");
+  if (field.type === "json" && value !== "") text = JSON.stringify(value, null, 1);
+  // A value the dropdown does not offer -- an invented style word, a model that
+  // is not installed -- is shown as it is rather than silently blanked.
+  if (el.tagName === "SELECT" && text !== "" && ![...el.options].some((option) => option.value === text)) {
+    el.append(new Option(`${text} (from spec)`, text));
+  }
+  el.value = text;
+}
+
 function buildSpec() {
-  const value = (id) => $(id).value.trim();
-  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
-
-  const spec = {
-    intent: value("intent"),
-    subject: { primary: value("subject") || "an unnamed subject" },
-    scene: {}, style: {}, camera: {}, lighting: {}, palette: {},
-    composition: { aspect: value("aspect") || "1:1" },
-    control: { mode: value("control-mode"), strength: Number($("control-strength").value) },
-    render: { variations: Number($("variations").value || 1) },
-  };
-
-  const details = commaList(value("details"));
-  if (details.length) spec.subject.details = details;
-  if (value("action")) spec.subject.action = value("action");
-
-  for (const [id, key] of [["setting", "setting"], ["time", "time"], ["weather", "weather"]]) {
-    if (value(id)) spec.scene[key] = value(id);
+  if (loadedSpec === null) {
+    const spec = {};
+    for (const field of FORM_FIELDS) {
+      const value = readField(field);
+      if (value !== undefined) setPath(spec, field.path, value);
+    }
+    if (!spec.subject?.primary) setPath(spec, "subject.primary", "an unnamed subject");
+    return spec;
   }
-  if (value("medium")) spec.style.medium = value("medium");
-  if (value("movement")) spec.style.movement = value("movement");
-  if (value("detail")) spec.style.detail = value("detail");
-  const descriptors = commaList(value("descriptors"));
-  if (descriptors.length) spec.style.descriptors = descriptors;
-
-  for (const id of ["shot", "lens", "angle", "focus"]) if (value(id)) spec.camera[id] = value(id);
-  if (value("lighting")) spec.lighting.key = value("lighting");
-  if (value("palette")) spec.palette.name = value("palette");
-  if (value("contrast")) spec.palette.contrast = value("contrast");
-  if (value("rule")) spec.composition.rule = value("rule");
-  if (num("horizon") !== null) spec.composition.horizon = num("horizon");
-
-  const layersRaw = value("layers");
-  if (layersRaw) {
-    try { spec.composition.layers = JSON.parse(layersRaw); }
-    catch (e) { throw new Error("Layers JSON is invalid: " + e.message); }
+  const spec = structuredClone(loadedSpec);
+  for (const field of FORM_FIELDS) {
+    if ($(field.id).value === loadedForm[field.id]) continue;  // untouched since loading
+    const value = readField(field);
+    if (value === undefined) deletePath(spec, field.path);
+    else setPath(spec, field.path, value);
   }
-
-  if (value("model")) spec.render.model = value("model");
-  if (value("sampler")) spec.render.sampler = value("sampler");
-  if (num("steps") !== null) spec.render.steps = num("steps");
-  if (num("cfg") !== null) spec.render.cfg = num("cfg");
-  if (num("seed") !== null) spec.render.seed = num("seed");
-
   return spec;
 }
 
 function applySpec(spec) {
-  const set = (id, v) => { $(id).value = v === undefined || v === null ? "" : v; };
-  set("intent", spec.intent || "photoreal");
-  set("subject", spec.subject?.primary);
-  set("details", (spec.subject?.details || []).join(", "));
-  set("action", spec.subject?.action);
-  set("setting", spec.scene?.setting);
-  set("time", spec.scene?.time);
-  set("weather", spec.scene?.weather);
-  set("medium", spec.style?.medium);
-  set("movement", spec.style?.movement);
-  set("detail", spec.style?.detail);
-  set("descriptors", (spec.style?.descriptors || []).join(", "));
-  ["shot", "lens", "angle", "focus"].forEach((k) => set(k, spec.camera?.[k]));
-  set("lighting", spec.lighting?.key);
-  set("palette", spec.palette?.name);
-  set("contrast", spec.palette?.contrast);
-  set("aspect", spec.composition?.aspect || "1:1");
-  set("rule", spec.composition?.rule);
-  set("horizon", spec.composition?.horizon);
-  set("layers", spec.composition?.layers ? JSON.stringify(spec.composition.layers, null, 1) : "");
-  set("control-mode", spec.control?.mode || "none");
-  set("control-strength", spec.control?.strength ?? 0.6);
-  set("model", spec.render?.model);
-  set("sampler", spec.render?.sampler);
-  set("steps", spec.render?.steps);
-  set("cfg", spec.render?.cfg);
-  set("seed", spec.render?.seed);
-  set("variations", spec.render?.variations ?? 1);
+  loadedSpec = structuredClone(spec);
+  loadedForm = {};
+  for (const field of FORM_FIELDS) {
+    writeField(field, getPath(spec, field.path));
+    loadedForm[field.id] = $(field.id).value;
+  }
   updateIntentHint();
+  showAlsoInSpec();
+}
+
+function resolveSchema(node) {
+  if (!node) return null;
+  const ref = node.$ref || node.anyOf?.find((option) => option.$ref)?.$ref;
+  const target = ref ? SCHEMA?.$defs?.[ref.split("/").pop()] || {} : node;
+  return "default" in node ? { ...target, default: node.default } : target;
+}
+
+function isDefault(value, schema) {
+  if (schema && "default" in schema) return JSON.stringify(value) === JSON.stringify(schema.default);
+  return value === null || value === undefined || (Array.isArray(value) && value.length === 0);
+}
+
+// The loaded spec's fields that no input shows, so it is visible what a render
+// carries beyond the form. Values at their schema default are left out, as is a
+// size equal to the aspect's bucket: older bundles saved every default.
+function alsoInSpec(spec) {
+  const managed = new Set(FORM_FIELDS.map((field) => field.path));
+  const bucket = VOCAB?.aspects?.[spec.composition?.aspect || "1:1"];
+  const found = [];
+  const walk = (value, path, schema) => {
+    if (managed.has(path)) return;
+    if (isObject(value)) {
+      for (const [key, child] of Object.entries(value)) {
+        walk(child, path ? `${path}.${key}` : key, resolveSchema(schema?.properties?.[key]));
+      }
+      return;
+    }
+    if (isDefault(value, schema)) return;
+    if (bucket && ((path === "render.width" && value === bucket[0]) || (path === "render.height" && value === bucket[1]))) return;
+    found.push(path);
+  };
+  walk(spec, "", SCHEMA);
+  return found;
+}
+
+function showAlsoInSpec() {
+  const paths = loadedSpec ? alsoInSpec(loadedSpec) : [];
+  const box = $("also-in-spec");
+  box.classList.toggle("hidden", paths.length === 0);
+  if (!paths.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `Also in this spec, kept as loaded: <b>${paths.map((path) => esc(path)).join(", ")}</b>. `
+    + `Edit them in the raw JSON below. <button id="btn-drop-loaded" class="inline-btn">Drop them</button>`;
+  $("btn-drop-loaded").onclick = () => {
+    loadedSpec = null;
+    loadedForm = {};
+    showAlsoInSpec();
+    setStatus("Dropped what the form does not show", "Renders now use the form alone", 0);
+  };
 }
 
 /* ---------- rendering results ------------------------------------------ */
@@ -407,10 +512,16 @@ function showCompiled(compiled) {
   $("prompt-tokens").textContent = describeTokens(compiled);
   $("prompt-text").textContent = compiled.prompt;
   $("negative-text").textContent = compiled.negative_prompt || "(none)";
-  const warnings = [...(compiled.warnings || []), ...(compiled.notes || [])];
-  const list = $("prompt-warnings");
-  list.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
-  list.classList.toggle("hidden", warnings.length === 0);
+  showMessages("prompt-warnings", compiled.warnings, "warning");
+  showMessages("prompt-notes", compiled.notes, "note");
+}
+
+// A warning means the spec probably wants changing; a note says what was decided
+// on the caller's behalf. Two lists, so neither trains the eye to skip the other.
+function showMessages(id, messages, label) {
+  const items = messages || [];
+  $(id).innerHTML = items.map((message) => `<li><b>${label}</b>${esc(message)}</li>`).join("");
+  $(id).classList.toggle("hidden", items.length === 0);
 }
 
 function showBundle(bundle) {
@@ -439,10 +550,9 @@ function showBundle(bundle) {
       </div>`);
   });
 
-  const notes = bundle.notes || [];
-  const noteList = $("render-notes");
-  noteList.innerHTML = notes.map((n) => `<li>${n}</li>`).join("");
-  noteList.classList.toggle("hidden", notes.length === 0);
+  // Bundles written before the split carry their warnings among the notes.
+  showMessages("render-warnings", bundle.warnings, "warning");
+  showMessages("render-notes", bundle.notes, "note");
 }
 
 /* ---------- job polling ------------------------------------------------ */
@@ -586,12 +696,12 @@ $("btn-compile").onclick = async () => {
 };
 
 $("btn-control").onclick = async () => {
-  const spec = buildSpec();
-  if (spec.control.mode === "none") {
-    setStatus("Set a control mode first", "depth, canny or scribble", 0);
-    return;
-  }
   try {
+    const spec = buildSpec();
+    if ((spec.control?.mode || "none") === "none") {
+      setStatus("Set a control mode first", "depth, canny or scribble", 0);
+      return;
+    }
     const res = await fetch("/api/control-preview", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(spec),
@@ -651,13 +761,17 @@ $("btn-example").onclick = () => {
 };
 
 $("btn-json").onclick = () => {
-  $("json-spec").value = JSON.stringify(buildSpec(), null, 2);
-  $("json-spec").closest("details").open = true;
+  try {
+    $("json-spec").value = JSON.stringify(buildSpec(), null, 2);
+    $("json-spec").closest("details").open = true;
+  } catch (err) { setStatus("Could not build the spec", err.message, 0); }
 };
 
 $("btn-apply-json").onclick = () => {
-  try { applySpec(JSON.parse($("json-spec").value)); setStatus("JSON applied to the form", "", 0); }
-  catch (err) { setStatus("That JSON is not valid", err.message, 0); }
+  try {
+    applySpec(JSON.parse($("json-spec").value));
+    setStatus("JSON loaded", "Render sends it as written; a form edit changes only that field", 0);
+  } catch (err) { setStatus("That JSON is not valid", err.message, 0); }
 };
 
 document.addEventListener("click", (event) => {
@@ -728,6 +842,8 @@ async function boot() {
   } catch (err) {
     setStatus("Could not load the vocabulary", err.message, 0);
   }
+  // Only used to leave schema defaults out of the "also in this spec" list.
+  try { SCHEMA = await api("/api/schema"); } catch { SCHEMA = null; }
 
   try {
     const health = await api("/api/health");

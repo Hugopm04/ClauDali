@@ -217,10 +217,6 @@ def get(model_id: str) -> ModelEntry:
         ) from None
 
 
-def installed() -> list[ModelEntry]:
-    return [entry for entry in CATALOG.values() if entry.is_installed()]
-
-
 def custom_checkpoints() -> list[Path]:
     """Single-file checkpoints the user dropped into ``models/weights/custom/``.
 
@@ -360,7 +356,6 @@ __all__ = [
     "custom_checkpoints",
     "download_url",
     "get",
-    "installed",
     "profile_size_gb",
     "resolve_checkpoint",
     "resolve_remote_files",

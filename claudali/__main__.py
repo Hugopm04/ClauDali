@@ -107,8 +107,10 @@ def _print_variations(bundle: Any) -> None:
         print(f"  #{record.index + 1} seed {record.seed}  {Path(record.image).name}")
         for flag in record.diagnostics.get("flags", []):
             print(f"      ! {flag}")
+    for warning in bundle.warnings:
+        print(f"  warning: {warning}")
     for note in bundle.notes:
-        print(f"  note: {note}")
+        print(f"  note   : {note}")
 
 
 def _run_render(writer: Any, compiled: Any = None, resume: Any = None, force: bool = False) -> int:

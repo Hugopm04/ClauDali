@@ -19,7 +19,7 @@ with this plan's date and re-read it if newer (Hugo's global CLAUDE.md rule).
    refactor, and task 3 touches the same bundle, render and UI code as task 2.
 3. **One commit per task, on `main`, no push.** Hugo chose that for tasks 1–3.
    Task 4 grew out of a task-3 question; commit it separately and mention the
-   split in your report.
+   split in your report. Hugo later asked for tasks 2 and 3 to be pushed too.
 4. **Update the status table below as you go**, not at the end. Record GPU
    minutes spent: the budget is shared across every session (section 3.3).
 5. Keep docs in step with each change (Hugo's global rule). Each task section
@@ -35,7 +35,7 @@ with this plan's date and re-read it if newer (Hugo's global CLAUDE.md rule).
 | 1. Silence three library warnings | done | `463a4df` | 0 | Verified on CPU against the real libraries: all three printed without `quiet`, none with it; the tokenizer warning still prints outside compel. Section 10 test 1 then confirmed none of the three on stderr during a Juggernaut load and render |
 | 2. Exact pause/resume (engine, CLI, API, UI) | done | see `git log` | ~3.5 | Section 10 test 1 passed in full, see below. **Pushed** at Hugo's request, not only committed |
 | Section 10 test 1 (after task 2) | done | — | (in row 2) | Juggernaut, 768×768, 4 steps, dpmpp_2m_karras, cuDNN disabled by the probe. Uninterrupted vs paused after step 2, saved to disk, resumed through `render()` in a reopened bundle: **latents `torch.equal`, pixels identical**. `decode_latents` vs the pipeline's own decode of the same latents: **identical, max pixel diff 0**. Steps took ~10–13 s at 768². **Available RAM: 6.9 GB before loading, 1.29 GB after the pipeline load and a render**, of 16.56 GB total. So task 4's `auto` decode (~3.3 GB needed at 768², ~5.8 GB at 1344×768) will fall back to GPU tiled on this laptop, as 4.2 predicted. Remaining GPU budget: **~9.5 min** |
-| 3. Cleanup | not started | | | |
+| 3. Cleanup | done | see `git log` | 0 | All 14 items of section 8, plus three bugs found on the way (below). 87 tests pass. The UI merge was checked in Node against the page's real script and every example, not in a browser. **Pushed** at Hugo's request |
 | 4. Quality options (decode, fp32, refiner, hi-res, max preset) | not started | | | |
 
 ### Found while executing (read before task 3)
@@ -48,10 +48,10 @@ them was acted on unless the row above says so.
   pipeline load. Task 3 should either add `scipy` to the requirements (Hugo
   re-runs the installer) or drop `lms` from `SAMPLERS` and the docs. Every other
   sampler's state was probed on CPU and is tensors, lists of tensors/None and
-  primitives only.
+  primitives only. *Task 3 dropped `lms`.*
 - **The test suite takes ~5 s warm and ~20 s cold**, not the "~1.5 s" in
   CLAUDE.md. Loading the CLIP tokenizer dominates. Fix the number in task 3's
-  doc pass along with the test count.
+  doc pass along with the test count. *Done.*
 - `.venv\Scripts\python` scripts run from the scratchpad need
   `PYTHONPATH=<project root>`, since `sys.path[0]` is the script's directory.
 
@@ -100,6 +100,71 @@ for `render.py`, `bundle.py`, `jobs.py`, `__main__.py`, `api.py` and
   how the tests drive the queue without a worker thread or torch.
 - Test count and time in CLAUDE.md were updated by task 2 (81 tests, ~35 s
   cold), so task 3's doc pass need not.
+
+### Found while executing task 3 (read before task 4)
+
+Session of 2026-09-13. Section 11's line numbers are now also stale for
+`pipelines.py`, `regional.py`, `spec.py`, `config.py` and `compiler.py`; re-grep.
+
+**Three bugs outside section 8's list were fixed**, each with a regression test:
+
+- **Saved specs lost what was inferred.** `BundleWriter.create` and
+  `JobQueue.save` dumped every schema default, so a spec loaded back (UI history,
+  `runs/queue.json`) carried `steps: 30`, `cfg: 6.5` and the default sampler as
+  explicit values: a painterly spec re-rendered at 30 steps and CFG 6.5 instead
+  of 34 and 7.5. Both dumps now use `exclude_unset=True`, and
+  `SceneSpec._resolve_resolution` unmarks the width and height it fills in.
+  **Task 4 must keep this true:** anything a validator fills in on a spec object
+  (for instance a `render.quality: "max"` expansion, if done in the spec rather
+  than the compiler) must be removed from `model_fields_set`, or it comes back
+  explicit. Resolving the preset in the compiler, as 9.1 says, avoids the issue.
+  Bundles written before this commit still hold full dumps.
+- **Samplers leaked between renders.** `_build_scheduler` built from the current
+  scheduler's config, which carries over every kwarg the new class accepts, so
+  `euler` after `dpmpp_2m_karras` on the cached pipeline got Karras sigmas. It now
+  builds from `LoadedPipeline.base_scheduler`, the one loaded.
+  `load_pipeline(model_id, controlnet_id)` **no longer takes a sampler**;
+  `apply_sampler(loaded, sampler)` sets it per render and returns warnings. The
+  refiner pipeline in 9.4 has its own scheduler config: keep its as-loaded
+  scheduler and build from that the same way.
+- **`lms` was removed** from `SAMPLERS` (it needs scipy). No doc listed it.
+
+**What task 4 builds on:**
+
+- **Warnings and notes are separate end to end.** `RenderResult`, `Bundle`,
+  `result.json` and `LoadedPipeline` all have both. Engine helpers now return
+  warnings, `(warnings, notes)` or `(value, warnings, notes)`:
+  `CudnnStatus.warnings/.notes`, `_plan_vae_precision -> (upcast, warnings,
+  notes)`, `_load_vae -> (vae, warnings)`, `_apply_memory_strategy -> (warnings,
+  notes)`, `_build_compel -> (compel, warnings)`, `regional.install -> (handle,
+  warnings, notes)`. 9.7's rule fits as is: `auto` falling back is a note, a
+  forced `cpu` falling back is a warning.
+- **UI merge semantics** in `web/index.html`. `FORM_FIELDS` maps each input id to
+  a spec path, with an optional `type` (`number`, `list`, `json`) and `empty` (what
+  the input shows when the spec lacks the field). `applySpec` keeps the spec in
+  `loadedSpec` and records what each input showed (`loadedForm`); `buildSpec`
+  clones `loadedSpec` and writes only inputs whose value changed since. With no
+  loaded spec it builds from the form, writing every non-blank input. For 9.7's
+  Quality fieldset that means: one `FORM_FIELDS` entry per input, and a blank
+  `""` first option on each select, which is what makes "leaving it on its default
+  writes nothing" true in both modes. **Checkboxes are not handled yet:**
+  `readField`, `writeField` and the change check in `buildSpec` all use `.value`.
+  Add a `bool` type that reads `.checked`, and decide what an unticked box writes
+  (nothing, so the server default applies). The "also in this spec" list skips
+  values equal to their `/api/schema` default, so new fields with defaults stay
+  out of it.
+- `init.mask_layer` exists and counts as init for 9.4's "refiner + init → raise".
+- `_plain_prompts` in `render.py` warns when a prompt longer than one chunk is
+  truncated for lack of compel. If 9.4's single-encoder refiner compel fails, route
+  its fallback through the same function.
+- `SETTINGS.default_model`, `keep_pipeline_warm` and `extra` are gone, and
+  `/api/health` no longer reports `default_model`.
+- `.gitignore` is anchored, so Grep and Glob now see `site-packages/*/models/`.
+- **How the UI was checked:** a Node harness ran the page's inline script on a
+  fake DOM (scratch files, not committed). Every bundled example rendered exactly
+  as written, one form edit changed one field, invented select values survived,
+  and an old full-dump spec listed only non-default fields. Nobody has clicked
+  through it in a browser yet; a minute of that is worth it before task 4's UI work.
 
 Suggested session split, if context runs short: session A = tasks 1 and 2;
 session B = task 3; session C = task 4. Task 2 is the biggest; if it must be
@@ -150,7 +215,7 @@ newer than 2026-09-12 16:22 exists in `outputs/`.
 | Exact-resume test | **In the default test suite** (tiny random SDXL pipeline on CPU, +10–20 s). | Appendix B. |
 | Speed | Measured ~13 min/image vs the documented 2–4. **Only correct the docs to the measured numbers.** Do not investigate or change speed settings. | Likely cause, for the record only: attention slicing is on by default and diffusers warns it seriously slows SDPA (`pipeline_utils.py:2082`). **Do not act on this unless Hugo asks.** |
 | GPU testing | *"No long tests, just short ones. The total process of testing should take less than 15 min."* | Section 3.3. No full fairy render; Hugo runs that himself. |
-| VAE decode default | **CPU fp32, untiled, with the checkpoint's own VAE; auto-fallback.** If free RAM is below what the decode needs, fall back to GPU tiled and say so in the notes. | Task 4. Section 4.2 has the measurements. |
+| VAE decode default | **CPU fp32, untiled, with the checkpoint's own VAE; auto-fallback.** If free RAM is below what the decode needs, fall back to GPU tiled and say so in the notes. **Forcing CPU fp32 untiled must be selectable in the web UI too**, per render, not only through the `CLAUDALI_VAE_DECODE` env var (Hugo, added 2026-09-13 after the GPU test showed `auto` will fall back on this laptop). | Task 4. Section 4.2 has the measurements; 9.2 and 9.7 the details. |
 | Web UI dropping fields | **Merge form edits onto the loaded spec + add a `subject.anchor` field.** The form edits only what it shows; everything else in a loaded spec is kept and listed as "also in this spec"; "Use this JSON" renders exactly that JSON. | Task 3. |
 | Best-quality options | Hugo, verbatim: *"Add all of the above, making it optional to use each of them. Add the new downloads to the download script and an option to download them, don't download them by yourself."* "All of the above" = (a) make the top-precision paths actually work (fp32 on 6 GB via sequential offload), (b) a one-switch max preset, (c) an SDXL refiner stage and a hi-res pass. | Task 4. **Never download model weights yourself**, and do not `pip install` new packages either (see 3.2). |
 | fp32 precision | **Build it, label it unmeasured.** Needs ~13–14 GB of weights in RAM on a 15.4 GB machine; will page. Document the RAM requirement and that its speed was not measured. | |
@@ -223,8 +288,8 @@ into one script per session.
 - **The Grep/Glob tools respect `.gitignore`, and `.gitignore` has an unanchored
   `models/`**, so every `.venv/Lib/site-packages/*/models/` directory
   (`diffusers/models`, `transformers/models`) is **silently skipped**. Search
-  those by explicit file path. Task 3 anchors the pattern (`/models/`), which
-  removes the trap.
+  those by explicit file path. Task 3 anchored the pattern (`/models/`), so the
+  trap is gone.
 - A Grep over all of `site-packages` times out after 20 s. Narrow the path.
 - PowerShell 5.1: no `&&`. `2>&1` on a native exe wraps stderr lines as
   `NativeCommandError` noise; pipe through `ForEach-Object { "$_" }` or use Git
@@ -701,7 +766,11 @@ install; Real-ESRGAN not installed or spandrel missing → `lanczos` plus a note
 - `cpu`: forced, paging accepted. If allocation still fails
   (`RuntimeError: DefaultCPUAllocator: not enough memory` / `MemoryError`),
   fall back to **CPU fp32 tiled** with a warning: it keeps fp32 and the
-  original VAE.
+  original VAE. Reachable per render as `render.vae_decode: "cpu"` from a spec,
+  the API **and the web UI** (see 9.7), as well as server-wide through
+  `CLAUDALI_VAE_DECODE=cpu`. On this laptop it is the only way to get the
+  untiled decode while a pipeline is loaded (section 10 test 1: 1.29 GB free
+  after the load).
 - `gpu`: untiled on the fix VAE; tiled on OOM with a note. `gpu_tiled`:
   today's behaviour.
 - **`CLAUDALI_VAE_DECODE` replaces `CLAUDALI_VAE_TILING`** (`config.py:90`,
@@ -728,8 +797,9 @@ install; Real-ESRGAN not installed or spandrel missing → `lanczos` plus a note
   gate at `pipelines.py:326` already does this), and select **sequential
   offload automatically** when total VRAM is below ~12 GB, with a note.
   Label it **unmeasured**: ~13–14 GB of weights in RAM on a 15.4 GB machine.
-- Precision becomes per job, so `load_pipeline`'s cache key (507-518, today
-  model + controlnet) must include dtype and offload mode. Pass dtype/offload
+- Precision becomes per job, so `load_pipeline`'s cache key (today model +
+  controlnet; since task 3 the sampler is set apart, by `apply_sampler`) must
+  include dtype and offload mode. Pass dtype/offload
   as parameters instead of reading `SETTINGS.torch_dtype` (528),
   `SETTINGS.dtype` (326) and `SETTINGS.offload` (358-365) inside. Switching
   precision reloads the pipeline; say so in a note.
@@ -818,14 +888,33 @@ install; Real-ESRGAN not installed or spandrel missing → `lanczos` plus a note
 
 A "Quality" fieldset: preset select; precision; VAE decode; refiner (checkbox,
 handoff); hi-res (checkbox, scale, upscaler, strength). It must follow task 3's
-merge semantics.
+merge semantics; "Found while executing task 3" says how, including the
+checkbox support the form does not have yet.
+
+**The VAE decode control must let the user force CPU fp32 untiled** (Hugo's
+request). A select writing `render.vae_decode`, with options labelled by what
+they do rather than by key, for example:
+
+- "Auto: CPU fp32 untiled if RAM allows, else GPU tiled" → `auto`
+- "Force CPU fp32 untiled (best quality; may swap and take several minutes)" → `cpu`
+- "GPU untiled" → `gpu`
+- "GPU tiled (fastest, lowest memory)" → `gpu_tiled`
+
+Leaving the select on its default must write nothing, so the server's
+`CLAUDALI_VAE_DECODE` still applies (explicit beats inferred). A decode that fell
+back has to be visible in the result card: `auto` to GPU tiled is a note, a
+forced `cpu` to CPU tiled is a warning. The `max` preset selects the CPU option
+in the form so the user sees it. Suggested, not asked for: have `/api/health`
+report available RAM, so the UI can say beside the select that `auto` will fall
+back right now.
 
 ### 9.8 Docs for task 4
 
 README: Install (flag), Configuration table (`CLAUDALI_VAE_DECODE`, the
 `CLAUDALI_DTYPE` row), a short "Quality options" section with honest costs
-(measured decode numbers; fp32, refiner and full-size hi-res unmeasured),
-Performance. `docs/scene-spec.md`: `render.quality/precision/vae_decode`,
+(measured decode numbers; fp32, refiner and full-size hi-res unmeasured, and
+that on a laptop like this one `auto` usually falls back, so the UI's "Force CPU
+fp32 untiled" is how to get the best decode), Performance. `docs/scene-spec.md`: `render.quality/precision/vae_decode`,
 `refiner`, `hires`. `docs/api.md`: bundle stage info. `CLAUDE.md`: module map
 (new modules, e.g. `engine/decode.py`, `engine/upscale.py`, `sysinfo.py`: keep
 torch imports inside functions), hardware section (the im2col memory fact and

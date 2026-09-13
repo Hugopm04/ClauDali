@@ -7,7 +7,7 @@ Two rules govern the whole format:
 
 - **Unknown section or field names are rejected.** `"lightning"` instead of
   `"lighting"` returns a 422 naming the field. A misspelled key is always a bug,
-  and silently ignoring it is how you spend four minutes rendering something
+  and silently ignoring it is how you spend a quarter of an hour rendering something
   that ignored half your request.
 - **Unknown *values* are accepted.** `"medium": "cyanotype"` is not in the
   vocabulary, so it passes through as free text and a warning says so. Inventing
@@ -246,7 +246,14 @@ which usually reads as more natural.
 | `image` | path, required | — | The source image |
 | `strength` | float 0–1 | `0.55` | How far to depart from the source |
 | `mask` | path | — | Presence of a mask switches to inpainting. White = regenerate |
+| `mask_layer` | string | — | Inpaint the `composition.layers` entry with this `role` instead of drawing a mask |
 | `mask_blur` | int | `8` | Feather radius; prevents a visible seam |
+
+`mask_layer` builds the mask from that layer's shape: an ellipse for `ellipse`,
+`column` and `blob`, a rectangle otherwise. It must name exactly one layer, and
+cannot be set together with `mask`. A bbox is normalised to the frame, so the
+mask lands on the original image's region only if the spec keeps the original's
+layers and aspect: copy `composition` across unchanged.
 
 Cannot currently be combined with `control` — that raises a clear error rather
 than ignoring one of them.

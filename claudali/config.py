@@ -10,7 +10,7 @@ reclaims every byte it took.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -105,16 +105,9 @@ class Settings:
     # survives the cuDNN workaround; "always" and "never" decide outright.
     vae_upcast: str = os.environ.get("CLAUDALI_VAE_UPCAST", "auto")  # auto|always|never
 
-    # Keep the last-used pipeline resident. Reloading SDXL from disk costs
-    # 30-60 s, so this matters far more than the VRAM it holds.
-    keep_pipeline_warm: bool = _env_bool("CLAUDALI_KEEP_WARM", True)
-
-    default_model: str = os.environ.get("CLAUDALI_DEFAULT_MODEL", "sdxl-base")
     preview_max_side: int = _env_int("CLAUDALI_PREVIEW_MAX_SIDE", 512)
     max_queue: int = _env_int("CLAUDALI_MAX_QUEUE", 64)
     job_retention: int = _env_int("CLAUDALI_JOB_RETENTION", 200)
-
-    extra: dict = field(default_factory=dict)
 
     @property
     def torch_dtype(self):  # pragma: no cover - trivial mapping

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 quiet.install()
 
 # Scheduler keys exposed in the spec, mapped to diffusers classes and the
-# constructor kwargs that make them behave as the name promises.
+# constructor kwargs that make them behave as the name promises. Every class
+# must construct with requirements.txt alone, which a test checks: "lms" was
+# dropped because LMSDiscreteScheduler needs scipy.
 SAMPLERS: dict[str, tuple[str, dict[str, Any]]] = {
     "dpmpp_2m": ("DPMSolverMultistepScheduler", {"algorithm_type": "dpmsolver++"}),
     "dpmpp_2m_karras": (
@@ -55,7 +57,6 @@ SAMPLERS: dict[str, tuple[str, dict[str, Any]]] = {
     "euler": ("EulerDiscreteScheduler", {}),
     "euler_a": ("EulerAncestralDiscreteScheduler", {}),
     "heun": ("HeunDiscreteScheduler", {}),
-    "lms": ("LMSDiscreteScheduler", {}),
     "unipc": ("UniPCMultistepScheduler", {}),
     "ddim": ("DDIMScheduler", {}),
 }
@@ -66,17 +67,21 @@ _CACHE: "Optional[LoadedPipeline]" = None
 
 @dataclass
 class LoadedPipeline:
-    """A resident base pipeline and the identity of what it holds."""
+    """A resident base pipeline and the identity of what it holds.
+
+    ``warnings`` and ``notes`` are what loading it had to say. They belong to the
+    load, so every render that reuses the pipeline repeats them: compel being
+    unavailable is still true the second time.
+    """
 
     model_id: str
     controlnet_id: Optional[str]
     pipe: Any
+    # The checkpoint's own scheduler as loaded, which every sampler is built from.
+    base_scheduler: Any = None
     compel: Any = None
-    notes: list[str] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.notes is None:
-            self.notes = []
+    warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def device_report() -> dict[str, Any]:
@@ -131,6 +136,7 @@ class CudnnStatus:
     disabled: bool
     survives_workaround: bool
     notes: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 def _conv_probe_fails() -> bool:
@@ -182,10 +188,17 @@ def _plan_cudnn(
     ``measure()`` reports whether fp16 convolutions return NaN *with cuDNN in
     whatever state it is currently in*, and ``set_enabled()`` changes that
     state, so the two are called in turn rather than up front.
+
+    A fault left in place is a warning; a workaround applied is a note.
     """
+    warnings: list[str] = []
     notes: list[str] = []
+
+    def status(broken: bool, disabled: bool, survives: bool) -> CudnnStatus:
+        return CudnnStatus(broken, disabled, survives, tuple(notes), tuple(warnings))
+
     if mode not in {"auto", "on", "off"}:
-        notes.append(
+        warnings.append(
             f"unknown CLAUDALI_CUDNN '{mode}'; expected auto, on or off. Falling back to auto."
         )
         mode = "auto"
@@ -193,18 +206,18 @@ def _plan_cudnn(
     if mode == "off":
         set_enabled(False)
         notes.append("cuDNN is disabled by CLAUDALI_CUDNN=off")
-        return CudnnStatus(False, True, False, tuple(notes))
+        return status(False, True, False)
 
     if not measure():
-        return CudnnStatus(False, False, False, tuple(notes))
+        return status(False, False, False)
 
     if mode == "on":
-        notes.append(
+        warnings.append(
             "this machine's cuDNN returns NaN from some fp16 convolutions, which renders "
             "images solid black, but CLAUDALI_CUDNN=on keeps it enabled. Unset it to let "
             "ClauDali disable cuDNN instead."
         )
-        return CudnnStatus(True, False, True, tuple(notes))
+        return status(True, False, True)
 
     set_enabled(False)
     if measure():
@@ -212,20 +225,21 @@ def _plan_cudnn(
         # fallback that fixes nothing, and say so: the fp32 VAE decode is the
         # only remaining defence and it may not be enough either.
         set_enabled(True)
-        notes.append(
+        warnings.append(
             "this machine returns NaN from some fp16 convolutions even with cuDNN "
             "disabled, so cuDNN is not the cause and has been left on. Images may "
-            "still come out solid black; set CLAUDALI_DTYPE=float32 to avoid fp16 "
-            "convolutions altogether."
+            "still come out solid black; CLAUDALI_DTYPE=float32 avoids fp16 "
+            "convolutions altogether, but its ~10 GB UNet does not fit a 6 GB card "
+            "under model offload."
         )
-        return CudnnStatus(True, False, True, tuple(notes))
+        return status(True, False, True)
 
     notes.append(
         "this machine's cuDNN returns NaN from some fp16 convolutions, which renders "
         "every image solid black; cuDNN is disabled for this process. On a card with "
         "no tensor cores this costs no measurable speed. Set CLAUDALI_CUDNN=on to override."
     )
-    return CudnnStatus(True, True, False, tuple(notes))
+    return status(True, True, False)
 
 
 @lru_cache(maxsize=1)
@@ -261,19 +275,21 @@ def _should_upcast_vae(mode: str, is_fp16: bool, probe: Callable[[], bool]) -> b
     return probe()
 
 
-def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str]]:
+def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str], list[str]]:
     """Work out the VAE's decode precision before any weights are loaded.
 
     In ``auto`` this is the *second* line of defence. Disabling cuDNN already
     clears the fp16 convolution fault wherever it can, so the fp32 decode is
-    only worth its cost when the fault outlived that.
+    only worth its cost when the fault outlived that. Returns
+    ``(upcast, warnings, notes)``.
     """
     import torch
 
+    warnings: list[str] = []
     notes: list[str] = []
     mode = SETTINGS.vae_upcast
     if mode not in {"auto", "always", "never"}:
-        notes.append(
+        warnings.append(
             f"unknown CLAUDALI_VAE_UPCAST '{mode}'; expected auto, always or never. "
             "Falling back to auto."
         )
@@ -289,22 +305,33 @@ def _plan_vae_precision(torch_dtype: Any) -> tuple[bool, list[str]]:
             "every image to solid black; the VAE will decode in fp32 instead. Renders "
             "are a little slower. Set CLAUDALI_VAE_UPCAST=never to override."
         )
-    return upcast, notes
+    return upcast, warnings, notes
 
 
-def _build_scheduler(pipe: Any, sampler: str) -> list[str]:
-    """Swap the pipeline's scheduler for the requested sampler."""
-    notes: list[str] = []
+def _build_scheduler(pipe: Any, sampler: str, base: Any = None) -> list[str]:
+    """Give the pipeline a fresh scheduler for the requested sampler. Returns warnings.
+
+    Built from ``base``, the checkpoint's own scheduler as loaded, and never from
+    whichever one the previous render left on a cached pipeline. ``from_config``
+    carries over every setting the new class accepts, so ``dpmpp_2m_karras``
+    followed by ``euler`` used to hand Karras sigmas to a sampler that never
+    asked for them: the same spec and seed rendered differently depending on
+    the job before it.
+    """
+    base = base if base is not None else pipe.scheduler
     if sampler not in SAMPLERS:
-        notes.append(f"unknown sampler '{sampler}'; keeping the model's default")
-        return notes
+        pipe.scheduler = type(base).from_config(base.config)
+        return [
+            f"unknown sampler '{sampler}'; used the model's default scheduler "
+            f"({type(base).__name__}). Known samplers: {', '.join(sorted(SAMPLERS))}"
+        ]
 
     import diffusers
 
     class_name, kwargs = SAMPLERS[sampler]
     scheduler_class = getattr(diffusers, class_name)
-    pipe.scheduler = scheduler_class.from_config(pipe.scheduler.config, **kwargs)
-    return notes
+    pipe.scheduler = scheduler_class.from_config(base.config, **kwargs)
+    return []
 
 
 def _variant_for(local_dir: Any) -> Optional[str]:
@@ -326,19 +353,19 @@ def _variant_for(local_dir: Any) -> Optional[str]:
 
 
 def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
-    """Load the fp16-safe VAE when it is installed and enabled."""
-    notes: list[str] = []
+    """Load the fp16-safe VAE when it is installed and enabled. Returns ``(vae, warnings)``."""
+    warnings: list[str] = []
     if not SETTINGS.fp16_vae_fix or SETTINGS.dtype != "float16":
-        return None, notes
+        return None, warnings
 
     entry = get_model("sdxl-vae-fp16-fix")
     if not entry.is_installed():
-        notes.append(
+        warnings.append(
             "sdxl-vae-fp16-fix is not installed; on a GTX 16-series card images "
             "will very likely decode to solid black. Install it with: "
             "python -m installer models --add sdxl-vae-fp16-fix"
         )
-        return None, notes
+        return None, warnings
 
     from diffusers import AutoencoderKL
 
@@ -348,17 +375,18 @@ def _load_vae(torch_dtype: Any) -> tuple[Any, list[str]]:
         variant=_variant_for(entry.local_dir),
         local_files_only=True,
     )
-    return vae, notes
+    return vae, warnings
 
 
-def _apply_memory_strategy(pipe: Any) -> list[str]:
-    """Configure offloading and slicing for the available VRAM."""
+def _apply_memory_strategy(pipe: Any) -> tuple[list[str], list[str]]:
+    """Configure offloading and slicing for the available VRAM. Returns ``(warnings, notes)``."""
+    warnings: list[str] = []
     notes: list[str] = []
     import torch
 
     if not torch.cuda.is_available():
-        notes.append("CUDA is not available; rendering on CPU will take many minutes per image")
-        return notes
+        warnings.append("CUDA is not available; rendering on CPU will take many minutes per image")
+        return warnings, notes
 
     if SETTINGS.offload == "sequential":
         pipe.enable_sequential_cpu_offload()
@@ -378,13 +406,13 @@ def _apply_memory_strategy(pipe: Any) -> list[str]:
         # These helpers moved from the pipeline onto the VAE itself (they are
         # gone from the pipeline in diffusers 0.40), so try the current location
         # first and fall back for older versions that requirements.txt allows.
-        notes.extend(_enable_vae_memory_savers(pipe))
-    return notes
+        warnings.extend(_enable_vae_memory_savers(pipe))
+    return warnings, notes
 
 
 def _enable_vae_memory_savers(pipe: Any) -> list[str]:
-    """Turn on VAE tiling and slicing, whichever API this diffusers exposes."""
-    notes: list[str] = []
+    """Turn on VAE tiling and slicing, whichever API this diffusers exposes. Returns warnings."""
+    warnings: list[str] = []
     vae = getattr(pipe, "vae", None)
 
     for vae_method, pipe_method in (
@@ -393,7 +421,7 @@ def _enable_vae_memory_savers(pipe: Any) -> list[str]:
     ):
         target = getattr(vae, vae_method, None) or getattr(pipe, pipe_method, None)
         if target is None:
-            notes.append(
+            warnings.append(
                 f"could not enable VAE {vae_method.split('_')[1]}; decoding a 1024px "
                 "image may spike VRAM. Lower the resolution if you hit an OOM."
             )
@@ -401,8 +429,8 @@ def _enable_vae_memory_savers(pipe: Any) -> list[str]:
         try:
             target()
         except Exception as exc:  # noqa: BLE001 - a memory hint must not fail a render
-            notes.append(f"VAE {vae_method} failed ({type(exc).__name__}); continuing without it")
-    return notes
+            warnings.append(f"VAE {vae_method} failed ({type(exc).__name__}); continuing without it")
+    return warnings
 
 
 def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
@@ -419,25 +447,26 @@ def _apply_vae_precision(pipe: Any, upcast: bool) -> list[str]:
     two disagree: the pipeline happens to read the attribute today, but anything
     reading the entry would silently skip the upcast and decode black.
     """
-    notes: list[str] = []
+    warnings: list[str] = []
     if not upcast:
-        return notes
+        return warnings
 
     vae = getattr(pipe, "vae", None)
     config = getattr(vae, "config", None)
     if config is None:
-        notes.append(
+        warnings.append(
             "this card needs fp32 VAE decoding but the pipeline exposes no VAE config; "
-            "images may decode to solid black. Set CLAUDALI_DTYPE=float32 to be safe."
+            "images may decode to solid black. CLAUDALI_DTYPE=float32 avoids that, but "
+            "its ~10 GB UNet does not fit a 6 GB card under model offload."
         )
-        return notes
+        return warnings
 
     register = getattr(vae, "register_to_config", None)
     if callable(register):
         register(force_upcast=True)
     else:
         config.force_upcast = True
-    return notes
+    return warnings
 
 
 def _execution_device(pipe: Any) -> Any:
@@ -474,7 +503,7 @@ def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
     afterwards, is what makes them record the GPU. The 1.6 GB this needs is not
     left sitting on a 6 GB card: the encoders go straight back to where they were.
     """
-    notes: list[str] = []
+    warnings: list[str] = []
     try:
         from compel import CompelForSDXL
 
@@ -488,23 +517,21 @@ def _build_compel(pipe: Any) -> tuple[Any, list[str]]:
         finally:
             for encoder, origin in zip(encoders, origins):
                 encoder.to(origin)
-        return compel, notes
+        return compel, warnings
     except Exception as exc:  # noqa: BLE001 - compel failure must not be fatal
-        notes.append(
+        warnings.append(
             f"compel unavailable ({type(exc).__name__}); prompt attention weights "
             "will be ignored and the raw text sent to CLIP"
         )
-        return None, notes
+        return None, warnings
 
 
-def load_pipeline(
-    model_id: str, controlnet_id: Optional[str] = None, sampler: str = "dpmpp_2m_karras"
-) -> LoadedPipeline:
+def load_pipeline(model_id: str, controlnet_id: Optional[str] = None) -> LoadedPipeline:
     """Load (or reuse) the base pipeline for a model, optionally with ControlNet.
 
     Thread-safe and single-slot: only one checkpoint is held at a time, because
     two resident SDXL models would not fit in 16 GB of system RAM alongside the
-    offload buffers.
+    offload buffers. The sampler is set per render, by :func:`apply_sampler`.
     """
     global _CACHE
 
@@ -514,12 +541,6 @@ def load_pipeline(
             and _CACHE.model_id == model_id
             and _CACHE.controlnet_id == controlnet_id
         ):
-            # Reuse the resident weights, but honour a different sampler. Load-time
-            # notes are kept: a warning that compel is unavailable is still true on
-            # the second render, and dropping it would hide a real problem.
-            for note in _build_scheduler(_CACHE.pipe, sampler):
-                if note not in _CACHE.notes:
-                    _CACHE.notes.append(note)
             return _CACHE
 
         import torch
@@ -529,18 +550,22 @@ def load_pipeline(
             StableDiffusionXLPipeline,
         )
 
+        warnings: list[str] = []
         notes: list[str] = []
         torch_dtype = SETTINGS.torch_dtype
         path, layout = resolve_checkpoint(model_id)
 
         # Probe the card before any weights are resident: the measurement needs
         # its own VRAM, and with offload disabled there is none to spare later.
-        notes.extend(apply_cudnn_workaround().notes)
-        upcast_vae, upcast_notes = _plan_vae_precision(torch_dtype)
+        cudnn = apply_cudnn_workaround()
+        warnings.extend(cudnn.warnings)
+        notes.extend(cudnn.notes)
+        upcast_vae, upcast_warnings, upcast_notes = _plan_vae_precision(torch_dtype)
+        warnings.extend(upcast_warnings)
         notes.extend(upcast_notes)
 
-        vae, vae_notes = _load_vae(torch_dtype)
-        notes.extend(vae_notes)
+        vae, vae_warnings = _load_vae(torch_dtype)
+        warnings.extend(vae_warnings)
 
         common: dict[str, Any] = {
             "torch_dtype": torch_dtype,
@@ -584,22 +609,36 @@ def load_pipeline(
             )
             pipe = StableDiffusionXLControlNetPipeline.from_pipe(pipe, controlnet=controlnet)
 
-        notes.extend(_build_scheduler(pipe, sampler))
-        notes.extend(_apply_memory_strategy(pipe))
-        notes.extend(_apply_vae_precision(pipe, upcast_vae))
+        memory_warnings, memory_notes = _apply_memory_strategy(pipe)
+        warnings.extend(memory_warnings)
+        notes.extend(memory_notes)
+        warnings.extend(_apply_vae_precision(pipe, upcast_vae))
         pipe.set_progress_bar_config(disable=True)
 
-        compel, compel_notes = _build_compel(pipe)
-        notes.extend(compel_notes)
+        compel, compel_warnings = _build_compel(pipe)
+        warnings.extend(compel_warnings)
 
         _CACHE = LoadedPipeline(
             model_id=model_id,
             controlnet_id=controlnet_id,
             pipe=pipe,
+            base_scheduler=pipe.scheduler,
             compel=compel,
+            warnings=warnings,
             notes=notes,
         )
         return _CACHE
+
+
+def apply_sampler(loaded: LoadedPipeline, sampler: str) -> list[str]:
+    """Put a render's sampler on the loaded pipeline. Returns warnings.
+
+    Per render rather than per load, so a warning about an unknown sampler goes
+    to the job that asked for it, instead of staying on the cached pipeline and
+    repeating on every later render.
+    """
+    with _LOCK:
+        return _build_scheduler(loaded.pipe, sampler, loaded.base_scheduler)
 
 
 def derive_pipeline(loaded: LoadedPipeline, task: str) -> Any:
@@ -647,6 +686,7 @@ def release() -> None:
 __all__ = [
     "SAMPLERS",
     "LoadedPipeline",
+    "apply_sampler",
     "derive_pipeline",
     "device_report",
     "load_pipeline",

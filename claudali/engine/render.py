@@ -24,8 +24,9 @@ from PIL import Image, ImageFilter
 
 from ..compiler import CompiledPrompt, compile_spec
 from ..config import SETTINGS
-from ..control.maps import build_control_image, control_repo_for_mode
+from ..control.maps import build_control_image, build_region_masks, control_repo_for_mode
 from ..spec import SceneSpec
+from ..tokens import CHUNK_CONTENT_TOKENS
 from . import quiet, regional
 from .checkpoint import (
     RenderAborted,
@@ -42,7 +43,13 @@ from .checkpoint import (
     package_versions,
     resume_into,
 )
-from .pipelines import apply_cudnn_workaround, derive_pipeline, device_report, load_pipeline
+from .pipelines import (
+    apply_cudnn_workaround,
+    apply_sampler,
+    derive_pipeline,
+    device_report,
+    load_pipeline,
+)
 
 # Called as (step, total_steps, variation_index, total_variations).
 ProgressCallback = Callable[[int, int, int, int], None]
@@ -66,6 +73,9 @@ class RenderResult:
     images: list[RenderedImage]
     compiled: CompiledPrompt
     control_image: Optional[Image.Image] = None
+    # Two channels, as in CompiledPrompt: a warning says something asked for did
+    # not happen, a note says something was decided on the caller's behalf.
+    warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     task: str = "txt2img"
@@ -85,14 +95,30 @@ def _seeds_for(spec: SceneSpec) -> list[int]:
     return [(spec.render.seed + offset) % (MAX_SEED + 1) for offset in range(count)]
 
 
+def _plain_prompts(compiled: CompiledPrompt) -> tuple[dict[str, Any], list[str]]:
+    """The prompts as text, for the pipeline to encode itself. Returns warnings.
+
+    compel is what lets a prompt run past one CLIP window. Without it diffusers
+    truncates each prompt to 77 tokens, so everything after the first chunk --
+    the subject restated at the head of later chunks included -- never reaches
+    the model. That loss is reported with its size.
+    """
+    warnings: list[str] = []
+    for label, count in (("prompt", compiled.tokens), ("negative prompt", compiled.negative_tokens)):
+        if count is not None and count.chunks > 1:
+            about = "" if count.exact else "~"
+            warnings.append(
+                f"without compel the {label} is truncated to CLIP's 77-token window: it is "
+                f"{about}{count.tokens} tokens, and everything after the first "
+                f"{CHUNK_CONTENT_TOKENS} was dropped"
+            )
+    return {"prompt": compiled.prompt, "negative_prompt": compiled.negative_prompt}, warnings
+
+
 def _encode_prompts(loaded: Any, compiled: CompiledPrompt) -> tuple[dict[str, Any], list[str]]:
-    """Build the prompt kwargs, using compel for attention weights when possible."""
-    notes: list[str] = []
+    """Build the prompt kwargs, using compel for attention weights when possible. Returns warnings."""
     if loaded.compel is None:
-        return (
-            {"prompt": compiled.prompt, "negative_prompt": compiled.negative_prompt},
-            notes,
-        )
+        return _plain_prompts(compiled)
     try:
         # Both prompts go in together: SDXL requires the positive and negative
         # embeddings to be the same length, and the wrapper pads them rather than
@@ -106,17 +132,16 @@ def _encode_prompts(loaded: Any, compiled: CompiledPrompt) -> tuple[dict[str, An
                 "negative_prompt_embeds": conditioning.negative_embeds,
                 "negative_pooled_prompt_embeds": conditioning.negative_pooled_embeds,
             },
-            notes,
+            [],
         )
     except Exception as exc:  # noqa: BLE001 - never fail a render over weighting
-        notes.append(
+        kwargs, warnings = _plain_prompts(compiled)
+        warnings.insert(
+            0,
             f"compel encoding failed ({type(exc).__name__}: {exc}); fell back to plain "
-            "prompts, so attention weights had no effect"
+            "prompts, so attention weights had no effect",
         )
-        return (
-            {"prompt": compiled.prompt, "negative_prompt": compiled.negative_prompt},
-            notes,
-        )
+        return kwargs, warnings
 
 
 def _load_init_images(spec: SceneSpec) -> tuple[Optional[Image.Image], Optional[Image.Image]]:
@@ -129,15 +154,20 @@ def _load_init_images(spec: SceneSpec) -> tuple[Optional[Image.Image], Optional[
     mask_image = None
     if spec.init.mask:
         mask_image = Image.open(spec.init.mask).convert("L").resize((width, height), Image.LANCZOS)
-        if spec.init.mask_blur > 0:
-            # A hard mask edge leaves a visible seam where the regenerated
-            # region meets the original. Feathering hides the join.
-            mask_image = mask_image.filter(ImageFilter.GaussianBlur(spec.init.mask_blur))
+    elif spec.init.mask_layer:
+        # A layer's bbox is normalised, so this covers the layer at this spec's
+        # size -- the original image's region only while the spec keeps the
+        # original's layers and aspect.
+        mask_image = build_region_masks(spec)[spec.init.mask_layer]
+    if mask_image is not None and spec.init.mask_blur > 0:
+        # A hard mask edge leaves a visible seam where the regenerated
+        # region meets the original. Feathering hides the join.
+        mask_image = mask_image.filter(ImageFilter.GaussianBlur(spec.init.mask_blur))
     return init_image, mask_image
 
 
 def _select_task(spec: SceneSpec) -> str:
-    if spec.init is not None and spec.init.mask:
+    if spec.init is not None and (spec.init.mask or spec.init.mask_layer):
         return "inpaint"
     if spec.init is not None:
         return "img2img"
@@ -361,7 +391,8 @@ def render(
     if resume is not None:
         compiled = CompiledPrompt.from_dict(resume.compiled)
     compiled = compiled or compile_spec(spec)
-    notes = [*compiled.warnings, *compiled.notes]
+    warnings = list(compiled.warnings)
+    notes = list(compiled.notes)
 
     task = _select_task(spec)
     controlnet_id = control_repo_for_mode(spec.control.mode) if spec.control.mode != "none" else None
@@ -377,7 +408,7 @@ def render(
     # after a minute of loading weights.
     control_image = build_control_image(spec) if controlnet_id else None
     init_image, mask_image = _load_init_images(spec)
-    model_id = spec.render.model or compiled.model
+    model_id = compiled.model
     fingerprint = _fingerprint(
         spec,
         compiled,
@@ -399,6 +430,7 @@ def render(
                 images=[],
                 compiled=compiled,
                 control_image=control_image,
+                warnings=warnings,
                 notes=notes,
                 duration_s=round(time.time() - started, 2),
                 task=task,
@@ -406,18 +438,21 @@ def render(
             )
         notes.append(_describe_resume(resume, len(seeds)))
 
-    loaded = load_pipeline(model_id, controlnet_id, compiled.sampler)
+    loaded = load_pipeline(model_id, controlnet_id)
+    warnings.extend(loaded.warnings)
     notes.extend(loaded.notes)
+    warnings.extend(apply_sampler(loaded, compiled.sampler))
 
     pipe = derive_pipeline(loaded, task)
-    prompt_kwargs, encode_notes = _encode_prompts(loaded, compiled)
-    notes.extend(encode_notes)
+    prompt_kwargs, encode_warnings = _encode_prompts(loaded, compiled)
+    warnings.extend(encode_warnings)
 
     # Regional conditioning patches the UNet's cross-attention in place, so it
     # has to be installed after the pipeline is derived and taken off again
     # whatever happens -- the pipeline is cached, and a processor left behind
     # would apply this job's regions to the next job's render.
-    regional_handle, regional_notes = regional.install(pipe, loaded, spec, compiled)
+    regional_handle, regional_warnings, regional_notes = regional.install(pipe, loaded, spec, compiled)
+    warnings.extend(regional_warnings)
     notes.extend(regional_notes)
     if regional_handle is not None and task != "txt2img":
         notes.append(
@@ -489,6 +524,7 @@ def render(
             images=list(images_so_far),
             compiled=compiled,
             control_image=control_image,
+            warnings=warnings,
             notes=notes,
             duration_s=round(time.time() - started, 2),
             task=task,

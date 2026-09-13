@@ -172,7 +172,7 @@ A finished job carries a `bundle`, which is also written to disk as
 {
   "job_id": "9f2c1a...",
   "directory": "C:\\...\\outputs\\2026-09-08_143355_coffee-cup_9f2c1a2b",
-  "spec": { "...": "exactly what you submitted, with defaults resolved" },
+  "spec": { "...": "exactly what you submitted: the fields you set, no schema defaults" },
   "compiled": {
     "prompt": "(professional photograph, ...)1.10, (a stoneware coffee cup)1.10, ...",
     "negative_prompt": "jpeg artifacts, ...",
@@ -198,6 +198,7 @@ A finished job carries a `bundle`, which is also written to disk as
   ],
   "contact_sheet": "...\\contact-sheet.jpg",
   "control_image": null,
+  "warnings": [],
   "notes": [],
   "duration_s": 184.2,
   "task": "txt2img",
@@ -210,6 +211,14 @@ A finished job carries a `bundle`, which is also written to disk as
 
 `compiled.fragments` is the audit trail: every phrase in the prompt with the spec
 field it came from and the weight applied.
+
+`spec` holds only the fields that were set, so submitting it again infers the
+same defaults from its intent; `compiled` holds every value the render used.
+`warnings` and `notes` are the compiler's, from `compiled`, plus the renderer's
+own, split the same way: a warning when something asked for did not happen
+(compel unavailable, a long prompt truncated without it, regional prompting
+failing to install), a note when something was decided for you (cuDNN disabled,
+the VAE decoding in fp32). Bundles written before the split carry both in `notes`.
 
 `status` is `running`, `paused`, `done`, `aborted`, `cancelled` or `error`, and
 `result.json` is rewritten with it each time an image lands. `aborted` means the
@@ -327,7 +336,7 @@ Designed so a caller can learn the format without reading documentation.
 {
   "status": "ok",
   "device": {
-    "torch": "2.4.0+cu124", "cuda_available": true,
+    "torch": "2.6.0+cu124", "cuda_available": true,
     "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0,
     "compute_capability": "7.5", "needs_fp16_vae_fix": true,
     "cudnn": 90100, "fp16_conv_broken": true, "cudnn_disabled": true,

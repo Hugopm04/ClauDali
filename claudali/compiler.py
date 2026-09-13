@@ -530,7 +530,10 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
         for layer in described:
             builder.add_text("layer", f"{layer.prompt}, {describe_position(layer)}")
 
-    if spec.composition.layers and spec.control.mode == "none":
+    # init.mask_layer is the other consumer of layer geometry: the named layer's
+    # bbox becomes the inpainting mask, so the layers are not unused there.
+    masking = spec.init is not None and spec.init.mask_layer is not None
+    if spec.composition.layers and spec.control.mode == "none" and not masking:
         # Geometry still only reaches the render through a ControlNet map, so a
         # carefully placed stack is still a wish without one. Saying so is the
         # rule; what changed is that the prompts are no longer lost with it.

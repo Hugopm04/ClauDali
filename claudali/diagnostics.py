@@ -168,13 +168,11 @@ def failure_flags(rgb: np.ndarray, exposure: dict[str, Any]) -> list[str]:
             "Run 'claudali doctor': if fp16_conv_broken is true and cudnn_disabled is "
             "false, set CLAUDALI_CUDNN=off; if cuDNN is already off, set "
             "CLAUDALI_VAE_UPCAST=always; otherwise ensure sdxl-vae-fp16-fix is "
-            "installed. CLAUDALI_DTYPE=float32 avoids all of them."
+            "installed. CLAUDALI_DTYPE=float32 avoids all of them, but its ~10 GB UNet "
+            "does not fit a 6 GB card under model offload."
         )
     elif exposure["mean"] > 253 and exposure["std"] < 1.5:
         flags.append("image is essentially solid white: the sampler likely diverged")
-
-    if not np.isfinite(rgb).all():
-        flags.append("image contains non-finite values")
 
     if exposure["dynamic_range"] < 25:
         flags.append(

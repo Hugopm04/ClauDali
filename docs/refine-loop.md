@@ -20,7 +20,7 @@ render   ->  look at the previews      (minutes)
 ```
 
 The two cheap steps come first for a reason. On a 6 GB card a render costs
-2–4 minutes; a compile costs nothing. Most bad renders are visible as bad
+about a quarter of an hour; a compile costs nothing. Most bad renders are visible as bad
 prompts before any pixels exist.
 
 ---
@@ -136,8 +136,14 @@ White in the mask means regenerate. `mask_blur` feathers the join; without it
 there is a visible seam. `strength` around 0.5–0.7 changes the region while
 keeping its lighting; above 0.85 it stops matching its surroundings.
 
-Region masks can be derived from your layer `role` names rather than drawn by
-hand — see `control.maps.build_region_masks`.
+If the region is one of your layers, name its `role` instead of drawing a mask.
+Keep the original spec's `composition` as it was: layer boxes are normalised to
+the frame, so the mask lands on the right pixels only with the same layers and
+aspect.
+
+```json
+"init": { "image": "outputs/.../001_seed1848.png", "mask_layer": "lighthouse", "strength": 0.6 }
+```
 
 ---
 
@@ -157,7 +163,7 @@ by the positive prompt.
 legible text are ClauDali's job. Texture, light, and material are SDXL's. Fight
 whichever one is losing, not both.
 
-**Batch overnight.** Eight variations at four minutes is half an hour. Queue
+**Batch overnight.** On a GTX 1660 Ti four variations take most of an hour. Queue
 them, walk away, judge the contact sheet in one sitting. The queue is designed
 for throughput, not latency.
 

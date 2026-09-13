@@ -385,7 +385,8 @@ class JobQueue:
                     # from its last checkpoint all the same.
                     "status": "queued" if job.status is JobStatus.QUEUED else "paused",
                     "id": job.id,
-                    "spec": job.spec.model_dump(mode="json"),
+                    # exclude_unset keeps inferred values inferred; see BundleWriter.create.
+                    "spec": job.spec.model_dump(mode="json", exclude_unset=True),
                     "bundle_dir": job.bundle_dir,
                     "created_at": job.created_at,
                 }

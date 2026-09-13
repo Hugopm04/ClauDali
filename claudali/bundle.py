@@ -76,6 +76,7 @@ class Bundle:
     variations: list[VariationRecord]
     contact_sheet: Optional[str] = None
     control_image: Optional[str] = None
+    warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     duration_s: float = 0.0
     task: str = "txt2img"
@@ -197,7 +198,10 @@ class BundleWriter:
         bundle = Bundle(
             job_id=job_id,
             directory=str(directory),
-            spec=spec.model_dump(mode="json"),
+            # Only what the caller set. Schema defaults written out would come back
+            # as explicit values and override the intent's, so re-rendering a spec
+            # from history would change its steps, CFG and sampler.
+            spec=spec.model_dump(mode="json", exclude_unset=True),
             compiled=compiled.to_dict(),
             variations=[],
             created_at=_now(),
@@ -320,9 +324,14 @@ class BundleWriter:
             control_path = self.directory / "control.png"
             result.control_image.save(control_path)
             self.bundle.control_image = str(control_path)
-        for note in result.notes:
-            if note not in self.bundle.notes:
-                self.bundle.notes.append(note)
+        # A resumed job repeats most of its messages; keep one of each, per channel.
+        for channel, messages in (
+            (self.bundle.warnings, result.warnings),
+            (self.bundle.notes, result.notes),
+        ):
+            for message in messages:
+                if message not in channel:
+                    channel.append(message)
         self.bundle.duration_s = round(self._earlier_duration + result.duration_s, 2)
         self.bundle.task = result.task
         self.bundle.device = result.device

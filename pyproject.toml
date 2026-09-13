@@ -25,7 +25,7 @@ dependencies = [
     "transformers>=4.40",
     "accelerate>=0.30",
     "safetensors>=0.4",
-    "compel>=2.0.2",
+    "compel>=2.4",
 ]
 
 [project.optional-dependencies]

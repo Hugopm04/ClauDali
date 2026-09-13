@@ -9,7 +9,7 @@ Designed for agents as much as for people, which means:
   list of field paths and messages, not prose.
 * **Nothing is hidden.** ``/api/compile`` renders no pixels but returns the
   exact prompt, negatives and warnings a spec would produce, which makes the
-  compiler debuggable without spending four minutes of GPU time to look at it.
+  compiler debuggable without spending minutes of GPU time to look at it.
 """
 
 from __future__ import annotations
@@ -18,10 +18,9 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
-
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -180,7 +179,6 @@ def health() -> dict[str, Any]:
             "offload": SETTINGS.offload,
             "dtype": SETTINGS.dtype,
             "fp16_vae_fix": SETTINGS.fp16_vae_fix,
-            "default_model": SETTINGS.default_model,
         },
     }
 

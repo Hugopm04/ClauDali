@@ -1,8 +1,10 @@
 # ClauDali local state — never committed
 .venv/
-models/
-outputs/
-runs/
+# Anchored to the project root: unanchored, these also hid every
+# site-packages/*/models/ directory from search tools.
+/models/
+/outputs/
+/runs/
 *.safetensors
 *.ckpt
 *.bin

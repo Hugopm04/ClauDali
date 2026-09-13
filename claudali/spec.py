@@ -227,7 +227,20 @@ class InitImage(Base):
     image: str = Field(..., description="Path to the source image.")
     strength: float = Field(0.55, ge=0.0, le=1.0, description="How far to depart from the source.")
     mask: Optional[str] = Field(None, description="Path to a mask; white = regenerate.")
+    mask_layer: Optional[str] = Field(
+        None,
+        description=(
+            "Inpaint the composition layer with this role instead of drawing a mask. Its bbox "
+            "is normalised, so the spec must keep the original's layers and aspect."
+        ),
+    )
     mask_blur: int = Field(8, ge=0, le=128, description="Feather radius for the mask, in pixels.")
+
+    @model_validator(mode="after")
+    def _one_mask(self) -> "InitImage":
+        if self.mask and self.mask_layer:
+            raise ValueError("init.mask and init.mask_layer are alternatives; set only one")
+        return self
 
 
 class Render(Base):
@@ -350,11 +363,37 @@ class SceneSpec(Base):
 
     @model_validator(mode="after")
     def _resolve_resolution(self) -> "SceneSpec":
-        """Fill width/height from the aspect bucket when not given explicitly."""
+        """Fill width/height from the aspect bucket when not given explicitly.
+
+        The filled-in size is not recorded as set. A spec is saved with
+        ``exclude_unset``, and a size saved as if the caller had chosen it would
+        override the aspect of every spec loaded back from it.
+        """
         if self.render.width is None or self.render.height is None:
             width, height = ASPECT_BUCKETS[self.composition.aspect]
+            inferred = {"width", "height"} - self.render.model_fields_set
             self.render.width = self.render.width or width
             self.render.height = self.render.height or height
+            self.render.model_fields_set.difference_update(inferred)
+        return self
+
+    @model_validator(mode="after")
+    def _check_mask_layer(self) -> "SceneSpec":
+        """``init.mask_layer`` must name exactly one layer: a mask cannot be a guess."""
+        role = self.init.mask_layer if self.init is not None else None
+        if role is None:
+            return self
+        roles = [layer.role for layer in self.composition.layers]
+        if role not in roles:
+            known = ", ".join(repr(name) for name in roles) or "there are none"
+            raise ValueError(
+                f"init.mask_layer {role!r} names no layer in composition.layers (roles: {known})"
+            )
+        if roles.count(role) > 1:
+            raise ValueError(
+                f"init.mask_layer {role!r} matches {roles.count(role)} layers; give the layer "
+                "to inpaint a role of its own"
+            )
         return self
 
     def resolution(self) -> tuple[int, int]:

@@ -265,17 +265,18 @@ class _RegionalProcessor:
 
 def install(
     pipe: Any, loaded: Any, spec: SceneSpec, compiled: CompiledPrompt
-) -> tuple[Optional[RegionalHandle], list[str]]:
+) -> tuple[Optional[RegionalHandle], list[str], list[str]]:
     """Patch the pipeline's cross-attention blocks for this spec's regions.
 
-    Returns ``(None, notes)`` on any failure. Nothing here is worth killing a
-    render for: the caller still gets an image, conditioned globally, and a note
-    saying the regions were not applied.
+    Returns ``(handle, warnings, notes)``, with no handle on any failure. Nothing
+    here is worth killing a render for: the caller still gets an image,
+    conditioned globally, and a warning saying the regions were not applied.
     """
+    warnings: list[str] = []
     notes: list[str] = []
     settings = spec.composition.regional
     if not settings.enabled or not compiled.regions:
-        return None, notes
+        return None, warnings, notes
 
     try:
         width, height = spec.resolution()
@@ -304,11 +305,11 @@ def install(
             )
 
         if not handle.modules:
-            notes.append(
+            warnings.append(
                 "composition.regional: no cross-attention blocks were found on this UNet, so "
                 "per-region prompts were not applied and the render used the global prompt only"
             )
-            return None, notes
+            return None, warnings, notes
 
         notes.append(
             f"composition.regional: {len(regions)} regions applied across "
@@ -316,13 +317,13 @@ def install(
             "This path is untested on real hardware; compare it against "
             "regional.enabled=false before trusting it."
         )
-        return handle, notes
+        return handle, warnings, notes
     except Exception as exc:  # noqa: BLE001 - a render must survive this
-        notes.append(
+        warnings.append(
             f"composition.regional failed to install ({type(exc).__name__}: {exc}); the render "
             "continued with the global prompt only, so per-layer prompts had no effect"
         )
-        return None, notes
+        return None, warnings, notes
 
 
 __all__ = ["Region", "RegionalHandle", "grid_for", "install"]

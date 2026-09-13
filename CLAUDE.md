@@ -27,9 +27,10 @@ that make it marginally prettier.
 The target machine has a **GTX 1660 Ti, 6 GB VRAM, Turing sm_75**. Four
 consequences shaped the architecture, and none of them are negotiable:
 
-1. **No tensor cores.** fp16 buys memory headroom, not speed. Expect ~2–4
-   minutes per 1024×1024 image at 30 steps. This is why the API is a job queue
-   and not a blocking call, and why the queue has exactly one worker.
+1. **No tensor cores.** fp16 buys memory headroom, not speed. Measured on this
+   laptop: ~13–14 minutes per 1344×768 image at 32 steps (23–26 s per step),
+   with model offload, attention slicing and cuDNN off. This is why the API is a
+   job queue and not a blocking call, and why the queue has exactly one worker.
 2. **6 GB VRAM.** SDXL's UNet alone is ~5 GB in fp16. `enable_model_cpu_offload()`
    is what makes it fit. Only one pipeline is resident at a time; loading a
    second checkpoint before releasing the first will swap the machine to death.
@@ -144,7 +145,7 @@ engine.render.render  ---> per variation: denoise -> latents -> decode_latents
    |                        on_checkpoint(ResumeState) before each variation
    |                        on_variation(RenderedImage) as each image lands
    |                        raises RenderPaused / RenderAborted when asked
-   |                        returns RenderResult (images + seeds + notes + device)
+   |                        returns RenderResult (images + seeds + warnings + notes + device)
    v
 bundle.BundleWriter   ---> compose.finish (postprocess, then overlays), then
                            outputs/<stamp>_<slug>_<jobid>/ written as it goes:
@@ -181,7 +182,11 @@ The caller owns the disk: `jobs.py` and the CLI hand `BundleWriter` methods to
 8. **Warnings and notes are different channels.** A warning means the spec
    probably wants changing. A note means the compiler decided something on the
    caller's behalf and is saying so. They were one list, and collapsing them
-   trained the eye to skip both. An inferred default goes in `notes`.
+   trained the eye to skip both. An inferred default goes in `notes`. The render
+   result, the bundle, the CLI and the UI keep the two apart as well, and the
+   engine sorts its own messages the same way: something asked for that did not
+   happen is a warning (compel unavailable, a prompt truncated without it), a
+   workaround chosen for the caller is a note (cuDNN disabled).
 
 ## Common tasks
 
@@ -203,7 +208,9 @@ f=registry.resolve_remote_files(e); print(len(f), sum(x.size for x in f)/1e9, 'G
 Update `approx_gb` to the measured value.
 
 **Add a sampler** — one entry in `SAMPLERS` in `engine/pipelines.py`, mapping to
-a diffusers scheduler class name and its kwargs.
+a diffusers scheduler class name and its kwargs. A test builds every entry and
+fails if a class needs a package `requirements.txt` does not install, which is
+why `lms` (scipy) is gone.
 
 **A subject was misjudged as having, or not having, a body** — add the word to
 `person_words` in `claudali/vocabulary/subjects.yaml`. Data, no code change.
@@ -227,7 +234,8 @@ no network. `tests/test_claudali.py` covers the spec contract, the compiler,
 control maps, compositing, postprocessing, diagnostics, the engine's device
 decisions, the silenced warnings, and pause/resume: checkpoints, the queue, the
 bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU.
-81 tests, ~35 s cold. Importing diffusers for the tiny pipeline is most of it.
+87 tests, ~15 s warm and ~35 s cold. Importing diffusers for the tiny pipeline is
+most of it.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -239,9 +247,11 @@ the gradient `direction` being backwards, `auto` VAE upcasting ignoring the
 measured card, the cuDNN workaround not firing on a card that needs it, a long
 prompt leaving four of its five CLIP chunks with no mention of the subject, the
 token estimator reading 31% low, an occupation such as "alchemist" not counting
-as a person, a resume that re-ran every step instead of continuing, and a torch
-import creeping into the server modules. Do not delete them to make a change
-pass.
+as a person, a resume that re-ran every step instead of continuing, a torch
+import creeping into the server modules, a saved spec whose written-out defaults
+beat its intent when loaded back, a sampler inheriting the previous one's Karras
+sigmas, and `lms` needing a package nothing installs. Do not delete them to make
+a change pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:
@@ -340,7 +350,8 @@ are all non-destructive and safe to run any time.
 - **compel is what makes attention weights real.** Without it, `(phrase)1.15` is
   passed to CLIP as literal parentheses and a number — the weight does nothing
   and the punctuation costs tokens. If compel fails to construct, the render
-  proceeds but a note says the weights were ignored. Do not remove that note.
+  proceeds with a warning that the weights were ignored, and another saying how
+  much of a long prompt diffusers truncated at 77 tokens. Do not remove either.
 - **compel needs `CompelForSDXL`, built with the encoders on the GPU.** Two
   separate traps, both of which silently cost every attention weight. The bare
   `Compel` class accepts a list of two encoders but its padding helper reads an
@@ -376,6 +387,25 @@ are all non-destructive and safe to run any time.
 - **`from_pipe` shares weights.** img2img and inpainting derive from the loaded
   txt2img pipeline at no extra disk, download or load cost. This is why SDXL base
   can inpaint without a dedicated inpainting checkpoint.
+- **A saved spec holds only what was set.** `BundleWriter.create` and the queue
+  save use `model_dump(exclude_unset=True)`, and `SceneSpec` unmarks the size it
+  fills in from the aspect. A full dump writes `steps: 30` and `cfg: 6.5` out as
+  if chosen, so a painterly spec loaded back from history rendered at 30 steps
+  and CFG 6.5 instead of 34 and 7.5, and its stored size beat any new aspect.
+  Older bundles still hold full dumps.
+- **A sampler is built from the checkpoint's scheduler, never the current one.**
+  `from_config` carries over every setting the new class accepts, so building
+  from whatever the last render left gave `euler` Karras sigmas after a
+  `dpmpp_2m_karras` job: same spec, same seed, a different image depending on the
+  job before. `LoadedPipeline.base_scheduler` is the one loaded, and
+  `apply_sampler` sets the sampler per render, not per load.
+- **The web form edits only what it shows.** `FORM_FIELDS` in `web/index.html`
+  maps each input to a spec path. A loaded spec is kept whole; an input still
+  showing what loading wrote leaves the spec's value alone; everything no input
+  shows is listed under "Also in this spec". `buildSpec` used to rebuild the spec
+  from the form, which dropped `subject.anchor`, `overlays`, `post`, `init` and
+  the rest without a word. A new input is one `FORM_FIELDS` entry; give a select
+  a blank default option so leaving it alone writes nothing.
 - **Decimal vs binary bytes.** `human_bytes` uses decimal (÷1000) so the
   installer's "7.1 GB" matches the catalogue's "7.14 GB". Two numbers for one
   file makes users distrust the tool.
