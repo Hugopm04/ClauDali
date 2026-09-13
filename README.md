@@ -115,6 +115,12 @@ The server binds to localhost only. There is no authentication, so if you pass
 `-BindHost 0.0.0.0` to expose it to your network, do that only on a network you
 trust.
 
+**Ctrl+C stops the server without losing work.** The running job pauses at the
+end of its current step, and it and every job not yet started are saved to
+`runs/queue.json`. They come back on the next start, held until you resume one
+or release the queue. Ctrl+C twice quits at once; the running job can then still
+resume, from the start of the image it was on.
+
 ---
 
 ## Three ways to use it
@@ -124,7 +130,9 @@ trust.
 A form for every spec field, with the vocabulary as dropdowns. **Compile only**
 shows you the prompt without spending GPU time. **Preview control** shows the
 composition map before you commit to a render. Results arrive with previews, a
-contact sheet and diagnostics, and history is one click away.
+contact sheet and diagnostics, and history is one click away. A running job can
+be paused, either letting the next queued job run or holding the queue, and
+resumed later exactly where it stopped.
 
 ### 2. The HTTP API
 
@@ -145,8 +153,13 @@ curl http://127.0.0.1:8188/api/jobs/a1b2c3...
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/render` | Queue a render, returns a job id |
-| `GET /api/jobs/{id}` | Status, progress, ETA, and the bundle when finished |
-| `DELETE /api/jobs/{id}` | Cancel a queued or running job |
+| `GET /api/jobs/{id}` | Status, progress, ETA, and the bundle as images land |
+| `DELETE /api/jobs/{id}` | Cancel a queued, running or paused job |
+| `POST /api/jobs/{id}/pause` | Pause at the next step, optionally holding the queue |
+| `POST /api/jobs/{id}/resume` | Resume a paused job, at the front of the queue |
+| `POST /api/resume` | Resume a paused bundle left on disk |
+| `GET /api/paused` | Paused jobs and resumable bundles |
+| `POST /api/queue/release` | Let a held queue run again |
 | `POST /api/compile` | Compile a spec to prompts without rendering |
 | `POST /api/control-preview` | The procedural control map as a PNG |
 | `GET /api/schema` | JSON Schema for a scene spec |
@@ -162,9 +175,18 @@ Full reference: [docs/api.md](docs/api.md).
 ```powershell
 .venv\Scripts\python -m claudali compile examples/poster.json   # see the prompt
 .venv\Scripts\python -m claudali render  examples/poster.json   # render it
+.venv\Scripts\python -m claudali resume  outputs\<bundle>       # continue a paused render
 .venv\Scripts\python -m claudali doctor                         # diagnose the install
 .venv\Scripts\python -m claudali models                         # list the catalogue
 ```
+
+Ctrl+C during `render` pauses at the end of the current step and saves what is
+needed to continue bit for bit, even after a reboot; the command prints the
+`resume` line to use. Ctrl+C twice aborts at once. Finished images are saved as
+each one lands, so neither loses them. `resume` refuses if anything that shapes
+the pixels changed since the pause (model file, library versions, precision,
+cuDNN state and so on) and lists what; `--force` continues anyway and records
+the differences in the bundle notes.
 
 ---
 
@@ -250,8 +272,15 @@ outputs/2026-09-08_143355_surreal-lighthouse_a1b2c3d4/
   contact-sheet.jpg           all variations, labelled with seeds
   control.png                 the control map, when one was used
   spec.json                   exactly what was asked for
-  result.json                 compiled prompt, seeds, diagnostics, timings, notes
+  result.json                 compiled prompt, seeds, diagnostics, timings, notes, status
+  checkpoint/                 only while the job can still be resumed
 ```
+
+The bundle is written as the render goes: each image lands the moment it is
+decoded, and `result.json` carries a `status` of `running`, `paused`, `done`,
+`aborted`, `cancelled` or `error`. `checkpoint/` holds `state.json` and, for a
+job paused mid-image, `state.pt` with the latents and sampler state (about
+0.5 MB). It is deleted when the job completes.
 
 `result.json` carries the diagnostics: exposure and clipping, dynamic range,
 sharpness, dominant palette with coverage, where the visual weight sits, and

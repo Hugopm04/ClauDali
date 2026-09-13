@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional, TextIO
 
 from . import __version__
 
@@ -28,6 +30,7 @@ def _load_spec_file(path: str) -> Any:
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    from . import api
     from .config import SETTINGS, ensure_dirs
 
     ensure_dirs()
@@ -35,8 +38,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
     port = args.port or SETTINGS.port
     print(f"ClauDali {__version__} -> http://{host}:{port}")
     print("   UI      /            API docs  /docs")
-    print("   Ctrl+C to stop\n")
-    uvicorn.run("claudali.api:app", host=host, port=port, log_level=args.log_level)
+    print("   Ctrl+C pauses the running job and saves the queue; twice quits at once\n")
+
+    server = uvicorn.Server(uvicorn.Config(api.app, host=host, port=port, log_level=args.log_level))
+    # uvicorn turns a second Ctrl+C into this flag rather than an exception, so
+    # the shutdown's wait for a checkpoint polls it to know when to give up.
+    api.force_exit_requested = lambda: server.force_exit
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        # uvicorn re-raises the Ctrl+C it absorbed once the server has stopped.
+        return 130
     return 0
 
 
@@ -70,14 +82,39 @@ def cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_render(args: argparse.Namespace) -> int:
-    """Render a spec file synchronously, reporting progress on one line."""
-    from .bundle import write_bundle
-    from .config import ensure_dirs
-    from .engine.render import render
+def pause_on_interrupt(controller: Any, out: Optional[TextIO] = None) -> Callable[[int, Any], None]:
+    """A SIGINT handler: the first Ctrl+C pauses, the second aborts.
 
-    ensure_dirs()
-    spec = _load_spec_file(args.spec)
+    The first press only sets the pause flag, which the render honours when the
+    current step ends. It then puts Python's default handler back, so a second
+    press raises ``KeyboardInterrupt`` in the main thread, where the sampler
+    runs, and stops it at the next bytecode.
+    """
+
+    def handler(_signum: int, _frame: Any) -> None:
+        controller.pause_requested = True
+        stream = out or sys.stdout
+        stream.write("\n  Pausing after the current step... (Ctrl+C again to abort)\n")
+        stream.flush()
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    return handler
+
+
+def _print_variations(bundle: Any) -> None:
+    print(f"  {bundle.directory}")
+    for record in bundle.variations:
+        print(f"  #{record.index + 1} seed {record.seed}  {Path(record.image).name}")
+        for flag in record.diagnostics.get("flags", []):
+            print(f"      ! {flag}")
+    for note in bundle.notes:
+        print(f"  note: {note}")
+
+
+def _run_render(writer: Any, compiled: Any = None, resume: Any = None, force: bool = False) -> int:
+    """Render into a bundle writer, turning Ctrl+C into a pause and a second one into an abort."""
+    from .engine.checkpoint import RenderController, RenderPaused, ResumeMismatch
+    from .engine.render import render
 
     def progress(step: int, total: int, variation: int, variations: int) -> None:
         share = (variation * total + step) / max(1, total * variations)
@@ -88,22 +125,92 @@ def cmd_render(args: argparse.Namespace) -> int:
         )
         sys.stdout.flush()
 
-    result = render(spec, progress=progress)
-    sys.stdout.write("\n")
+    controller = RenderController()
+    previous = signal.signal(signal.SIGINT, pause_on_interrupt(controller))
+    started = time.time()
+    try:
+        result = render(
+            writer.spec,
+            progress=progress,
+            compiled=compiled,
+            controller=controller,
+            resume=resume,
+            force=force,
+            on_variation=writer.add_variation,
+            on_checkpoint=writer.record_checkpoint,
+        )
+    except RenderPaused as stopped:
+        bundle = writer.pause(stopped)
+        state = stopped.state
+        steps = state.compiled.get("steps")
+        print(
+            f"\n\nPaused at variation {state.variation + 1}/{len(state.seeds)}, "
+            f"step {state.next_step}/{steps}. {len(bundle.variations)} image(s) saved."
+        )
+        _print_variations(bundle)
+        print(f'\nResume with: python -m claudali resume "{bundle.directory}"')
+        return 0
+    except ResumeMismatch as exc:
+        print("\nRefusing to resume: this would not continue identically. Changed since the pause:")
+        for difference in exc.differences:
+            print(f"  {difference}")
+        print("Add --force to resume anyway; the bundle notes will record the differences.")
+        return 2
+    except KeyboardInterrupt:
+        bundle = writer.abort(duration_s=time.time() - started)
+        print(f"\n\nAborted. {len(bundle.variations)} finished image(s) kept in {bundle.directory}")
+        if bundle.checkpoint is not None:
+            print(
+                "The image in progress was lost; resuming restarts it from step 0 with the same "
+                f'seed:\n  python -m claudali resume "{bundle.directory}"'
+            )
+        return 130
+    except Exception as exc:
+        writer.fail(f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
-    bundle = write_bundle(
-        spec, result, uuid.uuid4().hex, Path(args.out) if args.out else None
-    )
+    bundle = writer.complete(result)
+    sys.stdout.write("\n")
     print(f"\n{len(bundle.variations)} image(s) in {bundle.duration_s}s")
-    print(f"  {bundle.directory}")
-    for record in bundle.variations:
-        flags = record.diagnostics.get("flags", [])
-        print(f"  #{record.index + 1} seed {record.seed}  {Path(record.image).name}")
-        for flag in flags:
-            print(f"      ! {flag}")
-    for note in bundle.notes:
-        print(f"  note: {note}")
+    _print_variations(bundle)
     return 0
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    """Render a spec file synchronously, reporting progress on one line."""
+    from .bundle import BundleWriter
+    from .compiler import compile_spec
+    from .config import ensure_dirs
+
+    ensure_dirs()
+    spec = _load_spec_file(args.spec)
+    compiled = compile_spec(spec)
+    writer = BundleWriter.create(
+        spec, compiled, uuid.uuid4().hex, Path(args.out) if args.out else None
+    )
+    return _run_render(writer, compiled=compiled)
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    """Carry on with a paused, aborted or interrupted bundle."""
+    from .bundle import BundleWriter
+    from .engine.checkpoint import load_checkpoint, read_state
+
+    directory = Path(args.bundle)
+    if read_state(directory) is None:
+        print(f"No checkpoint in {directory}: nothing to resume.", file=sys.stderr)
+        return 1
+
+    writer = BundleWriter.open(directory)
+    resume = load_checkpoint(directory)
+    resume.completed = sorted(set(resume.completed) | set(writer.completed_indices()))
+    where = f"variation {resume.variation + 1}/{len(resume.seeds)}"
+    if resume.step is not None:
+        where += f", step {resume.next_step}/{resume.compiled.get('steps')}"
+    print(f"Resuming {where}. {len(resume.completed)} image(s) already done.")
+    return _run_render(writer, resume=resume, force=args.force)
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
@@ -176,10 +283,21 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--json", action="store_true", help="emit the full compiled JSON")
     compile_cmd.set_defaults(func=cmd_compile)
 
-    render_cmd = sub.add_parser("render", help="render a spec file")
+    render_cmd = sub.add_parser(
+        "render", help="render a spec file (Ctrl+C pauses, Ctrl+C twice aborts)"
+    )
     render_cmd.add_argument("spec")
     render_cmd.add_argument("--out", help="output directory (default: a new one under outputs/)")
     render_cmd.set_defaults(func=cmd_render)
+
+    resume_cmd = sub.add_parser("resume", help="continue a paused or interrupted bundle")
+    resume_cmd.add_argument("bundle", help="the bundle directory the pause printed")
+    resume_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="resume even if the model, libraries or settings changed since the pause",
+    )
+    resume_cmd.set_defaults(func=cmd_resume)
 
     doctor = sub.add_parser("doctor", help="report hardware, packages and installed models")
     doctor.set_defaults(func=cmd_doctor)

@@ -95,19 +95,25 @@ claudali/
   engine/
     quiet.py      Silences three specific, harmless library warnings by text
                   match on their loggers. Stdlib only.
+    checkpoint.py Pause and exact resume: the controller, resume state,
+                  checkpoint files, fingerprint, and the two pipeline hooks.
+                  Stdlib at import time.
     pipelines.py  Loads, configures and caches diffusers pipelines. All the
                   VRAM and fp16 handling lives here.
-    render.py     Runs the sampler. Chooses txt2img / img2img / inpaint.
+    render.py     Runs the sampler one variation at a time (denoise) and
+                  decodes (decode_latents). Chooses txt2img / img2img / inpaint.
     regional.py   Opt-in masked cross-attention for per-layer prompts.
                   UNTESTED on hardware; falls back loudly.
   diagnostics.py  Measurements over a finished image. Reports, never enforces.
   compose.py      Post-diffusion: Pillow overlays and exact postprocessing.
-  bundle.py       Writes the output bundle (images, previews, contact sheet,
-                  sidecar, diagnostics).
-  jobs.py         Single-worker queue with progress, ETA and cancellation.
+  bundle.py       Writes the output bundle as the render goes (BundleWriter):
+                  images, previews, contact sheet, sidecar, diagnostics, status.
+  jobs.py         Single-worker queue: progress, ETA, cancellation, pause with
+                  or without holding the queue, resume at the front, and the
+                  queue saved to runs/queue.json across a server restart.
   api.py          FastAPI app. Also serves web/index.html.
   web/index.html  The UI: one file, vanilla JS, no build step.
-  __main__.py     CLI: serve / compile / render / doctor / models.
+  __main__.py     CLI: serve / compile / render / resume / doctor / models.
 
 installer/
   progress.py     Dependency-free progress bars. Stdlib only, deliberately.
@@ -118,9 +124,10 @@ installer/
 
 **Import-cost rule:** importing `claudali.api`, `claudali.jobs` or
 `claudali.bundle` must never pull in torch. Torch is imported *inside functions*
-in `engine/`. This keeps the server start, the CLI, and every test that does not
-render fast. If you add a top-level `import torch` anywhere outside a function,
-you have broken this.
+in `engine/`, including `engine/checkpoint.py`, which all three import. This
+keeps the server start, the CLI, and every test that does not render fast. If
+you add a top-level `import torch` anywhere outside a function, you have broken
+this, and `test_the_server_modules_do_not_import_torch` will say so.
 
 ## Data flow
 
@@ -133,16 +140,20 @@ SceneSpec
    |-- control.maps.build_control_image -> depth / canny PNG   (optional)
    |
    v
-engine.render.render  ---> RenderResult (images + seeds + notes + device)
-   |
+engine.render.render  ---> per variation: denoise -> latents -> decode_latents
+   |                        on_checkpoint(ResumeState) before each variation
+   |                        on_variation(RenderedImage) as each image lands
+   |                        raises RenderPaused / RenderAborted when asked
+   |                        returns RenderResult (images + seeds + notes + device)
    v
-compose.finish        ---> postprocess, then overlays
-   |
-   v
-bundle.write_bundle   ---> outputs/<stamp>_<slug>_<jobid>/
+bundle.BundleWriter   ---> compose.finish (postprocess, then overlays), then
+                           outputs/<stamp>_<slug>_<jobid>/ written as it goes:
                              images, previews, contact sheet, spec.json,
-                             result.json (with diagnostics)
+                             result.json (status, diagnostics), checkpoint/
 ```
+
+The caller owns the disk: `jobs.py` and the CLI hand `BundleWriter` methods to
+`render` as its callbacks, and save the checkpoint a pause raises.
 
 ## Design rules that must hold
 
@@ -213,8 +224,10 @@ or three words naming the subject alone.
 
 Everything up to the sampler is deterministic and needs no weights, no CUDA and
 no network. `tests/test_claudali.py` covers the spec contract, the compiler,
-control maps, compositing, postprocessing, diagnostics and the engine's
-device decisions — 61 tests, ~1.5 s.
+control maps, compositing, postprocessing, diagnostics, the engine's device
+decisions, the silenced warnings, and pause/resume: checkpoints, the queue, the
+bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU.
+81 tests, ~35 s cold. Importing diffusers for the tiny pipeline is most of it.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -225,8 +238,10 @@ Several tests are regression locks on bugs that actually happened: an explicit
 the gradient `direction` being backwards, `auto` VAE upcasting ignoring the
 measured card, the cuDNN workaround not firing on a card that needs it, a long
 prompt leaving four of its five CLIP chunks with no mention of the subject, the
-token estimator reading 31% low, and an occupation such as "alchemist" not
-counting as a person. Do not delete them to make a change pass.
+token estimator reading 31% low, an occupation such as "alchemist" not counting
+as a person, a resume that re-ran every step instead of continuing, and a torch
+import creeping into the server modules. Do not delete them to make a change
+pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:
@@ -337,6 +352,27 @@ are all non-destructive and safe to run any time.
   dies at `index_select`. Passing `device=` does not help, because it is not
   forwarded to the providers. `_build_compel` moves the encoders to the execution
   device, constructs, and moves them back.
+- **Exact resume rests on two hooks into diffusers' loop, and a test locks them.**
+  diffusers cannot start a sampler partway. `checkpoint.resume_into` wraps
+  `pipe.prepare_latents` on the instance: the original runs, so the generator
+  is consumed as usual, and then the saved latents are swapped in. From inside
+  that wrapper it sets `pipe._interrupt` to a `_SkipUntil`, which makes
+  `if self.interrupt: continue` skip the steps already done. At the first step
+  left to run, `_SkipUntil` restores the scheduler state and generator state.
+  It has to be inside the loop, after `set_timesteps` and `set_begin_index`
+  have reset exactly that state. Both hooks are removed in `finally`, because
+  the pipeline is cached. `test_a_paused_render_resumes_bit_for_bit` runs a
+  tiny random SDXL pipeline on the CPU. It checks `torch.equal` on the latents
+  and counts UNet calls, since a resume that silently re-ran every step with
+  the same seed would also match. If a diffusers upgrade breaks it, fix the
+  hooks; do not loosen the test. The pipeline is called with
+  `output_type="latent"` and decoded by `render.decode_latents`, a
+  line-for-line mirror of the pipeline's own decode. That is what lets a render
+  paused after its last step, or handed to a later stage, need no second path.
+- **A pause must never overwrite a step checkpoint with a boundary one.** `render`
+  calls `on_checkpoint` before each variation, which is what lets a killed
+  process resume. It skips that call for a variation resuming mid-image. A crash
+  during the resume then still resumes from the saved step, not from step 0.
 - **`from_pipe` shares weights.** img2img and inpainting derive from the loaded
   txt2img pipeline at no extra disk, download or load cost. This is why SDXL base
   can inpaint without a dedicated inpainting checkpoint.
@@ -385,6 +421,7 @@ python -m installer models --add juggernaut-xl
 python -m installer status
 
 .venv\Scripts\python -m claudali serve|compile|render|doctor|models
+.venv\Scripts\python -m claudali resume <bundle dir> [--force]
 ```
 
 ## Keeping docs in step

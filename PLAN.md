@@ -32,8 +32,9 @@ with this plan's date and re-read it if newer (Hugo's global CLAUDE.md rule).
 | Task | State | Commit | GPU min used | Notes |
 |---|---|---|---|---|
 | Planning session: VAE decode benchmark | done | — | ~1.5 | Section 4.2 |
-| 1. Silence three library warnings | done | see `git log` | 0 | Verified on CPU against the real libraries: all three messages printed without `quiet`, none with it, and the tokenizer warning still prints outside compel. The GPU check in section 10 test 1 is still to run |
-| 2. Exact pause/resume (engine, CLI, API, UI) | not started | | | |
+| 1. Silence three library warnings | done | `463a4df` | 0 | Verified on CPU against the real libraries: all three printed without `quiet`, none with it; the tokenizer warning still prints outside compel. Section 10 test 1 then confirmed none of the three on stderr during a Juggernaut load and render |
+| 2. Exact pause/resume (engine, CLI, API, UI) | done | see `git log` | ~3.5 | Section 10 test 1 passed in full, see below. **Pushed** at Hugo's request, not only committed |
+| Section 10 test 1 (after task 2) | done | — | (in row 2) | Juggernaut, 768×768, 4 steps, dpmpp_2m_karras, cuDNN disabled by the probe. Uninterrupted vs paused after step 2, saved to disk, resumed through `render()` in a reopened bundle: **latents `torch.equal`, pixels identical**. `decode_latents` vs the pipeline's own decode of the same latents: **identical, max pixel diff 0**. Steps took ~10–13 s at 768². **Available RAM: 6.9 GB before loading, 1.29 GB after the pipeline load and a render**, of 16.56 GB total. So task 4's `auto` decode (~3.3 GB needed at 768², ~5.8 GB at 1344×768) will fall back to GPU tiled on this laptop, as 4.2 predicted. Remaining GPU budget: **~9.5 min** |
 | 3. Cleanup | not started | | | |
 | 4. Quality options (decode, fp32, refiner, hi-res, max preset) | not started | | | |
 
@@ -53,6 +54,52 @@ them was acted on unless the row above says so.
   doc pass along with the test count.
 - `.venv\Scripts\python` scripts run from the scratchpad need
   `PYTHONPATH=<project root>`, since `sys.path[0]` is the script's directory.
+
+**What task 2 changed that tasks 3 and 4 build on.** Section 11's line numbers
+for `render.py`, `bundle.py`, `jobs.py`, `__main__.py`, `api.py` and
+`web/index.html` are stale; re-grep. The rest:
+
+- `render.py` now has `denoise(pipe, call_kwargs, seed, controller=, resume=,
+  on_step=)` returning latents, and `decode_latents(pipe, latents)`, a mirror of
+  the pipeline's decode. **Task 4's decode policy replaces the body of
+  `decode_latents`**; keep today's GPU path as one branch of it. The refiner and
+  hi-res stages can call `denoise` on any SDXL pipeline, and a pause inside them
+  already works through `checkpoint.resume_into`. `ResumeState.stage` exists and
+  is always `"base"`. `render()`'s loop is per variation. The refiner's "all
+  bases first, then all refiners" batching needs a second loop, and the
+  checkpoint needs to hold the saved base latents of finished-base variations.
+  That is a format change, so bump `checkpoint.FORMAT_VERSION`.
+- `render()._fingerprint` lists what a resume compares. **Task 4 must add
+  precision, vae_decode, refiner and hires settings to it**, or a resume under
+  different quality settings will not be refused.
+- `render()` still merges `compiled.warnings + compiled.notes` into `notes` (task
+  3 item 2). `BundleWriter._absorb` dedupes notes across sessions of a resumed
+  job; split the channels there too.
+- `write_bundle` is gone; `BundleWriter.create/open`, then `add_variation`,
+  `record_checkpoint`, and one of `complete/pause/abort/cancel/fail`.
+- UI: new `watchJob`, `showJobActions`, `loadPaused`, `describeCheckpoint`, and
+  `esc()` for HTML escaping. `buildSpec`/`applySpec` are untouched, so task 3
+  item 1 is still wholly to do.
+- Deviations from section 7, all small and deliberate. (1) A job's `error` stays
+  a string; a refused resume adds `error_type: "resume_mismatch"` and a
+  `mismatch` list, rather than turning `error` into an object for every job.
+  (2) The bundle status list gained `cancelled`, distinct from `aborted`:
+  aborted is resumable from the variation start, cancelled is not. (3)
+  Cancelling the job that holds the queue clears the owner but leaves the queue
+  held; the UI offers "Release queue". (4) `POST /api/render` returns 503 when
+  the queue is full instead of blocking the request thread. (5) `claudali serve`
+  runs `uvicorn.Server` itself, so the shutdown can see uvicorn's second-Ctrl+C
+  flag through `api.force_exit_requested`.
+- **Verified: uvicorn 0.52 on Windows runs the lifespan shutdown and waits for
+  it.** A real `serve` process was stopped with Ctrl+Break, which goes through
+  the same `handle_exit` as Ctrl+C. It saved the held queue, restored it on
+  start, and served the pause endpoints. A second SIGINT sets `force_exit`, and
+  uvicorn skips the lifespan shutdown only if that is set *before* the shutdown
+  starts.
+- `JobQueue(autostart=False)`, `_take_next(timeout=0)` and `_settle(job)` are
+  how the tests drive the queue without a worker thread or torch.
+- Test count and time in CLAUDE.md were updated by task 2 (81 tests, ~35 s
+  cold), so task 3's doc pass need not.
 
 Suggested session split, if context runs short: session A = tasks 1 and 2;
 session B = task 3; session C = task 4. Task 2 is the biggest; if it must be

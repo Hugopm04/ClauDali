@@ -14,11 +14,12 @@ Designed for agents as much as for people, which means:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from contextlib import asynccontextmanager
 
@@ -29,13 +30,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from . import __version__
-from .bundle import list_bundles
+from .bundle import list_bundles, list_resumable
 from .compiler import compile_spec, load_vocabulary, vocabulary_index
 from .compose import available_fonts
 from .config import OUTPUTS_DIR, RUNS_DIR, SETTINGS, ensure_dirs
 from .control.maps import build_control_image
 from .engine.pipelines import SAMPLERS
-from .jobs import QUEUE
+from .jobs import FINISHED, QUEUE, QUEUE_STATE_FILE, JobStateError, JobStatus, QueueFull
 from .registry import CATALOG, PROFILES, custom_checkpoints, profile_size_gb
 from .spec import ASPECT_BUCKETS, SceneSpec
 
@@ -44,14 +45,50 @@ logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).resolve().parent / "web"
 UPLOAD_DIR = RUNS_DIR / "uploads"
 
+# How long stopping the server waits for the running job's checkpoint. One step
+# is ~25 s on a 6 GB card; the margin covers a model that is still loading.
+SHUTDOWN_PAUSE_TIMEOUT_S = 300.0
+
+# Set by ``claudali serve`` to read uvicorn's "Ctrl+C pressed twice" flag, so a
+# second press stops the shutdown waiting. Under a bare ``uvicorn`` command
+# nothing sets it, and the wait runs to its timeout.
+force_exit_requested: Callable[[], bool] = lambda: False
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Prepare directories and start the render worker before serving."""
+    """Restore the saved queue and start the worker; on the way out, pause and save it.
+
+    Ctrl+C on the server means pause and hold: the running job checkpoints at
+    its next step, and it and every job not yet started are written to
+    ``runs/queue.json``, to come back held on the next start.
+    """
     ensure_dirs()
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    restored = QUEUE.restore(QUEUE_STATE_FILE)
+    if restored:
+        logger.warning(
+            "Restored %d paused or queued job(s) from the last shutdown. The queue is held: "
+            "resume a job or release the queue to carry on.",
+            restored,
+        )
     QUEUE.start()
     yield
-    QUEUE.stop()
+    if QUEUE.current() is not None:
+        logger.warning(
+            "Pausing the running job after its current step, then saving the queue. "
+            "Ctrl+C again to quit at once; the job then resumes from the start of its "
+            "current variation instead."
+        )
+    saved = await asyncio.to_thread(
+        QUEUE.shutdown, QUEUE_STATE_FILE, SHUTDOWN_PAUSE_TIMEOUT_S, lambda: force_exit_requested()
+    )
+    if saved:
+        logger.warning(
+            "Saved %d paused or queued job(s) to %s; they come back held on the next start.",
+            saved,
+            QUEUE_STATE_FILE,
+        )
 
 
 app = FastAPI(
@@ -244,7 +281,10 @@ def control_preview(spec: SceneSpec) -> Response:
 @app.post("/api/render")
 def submit_render(spec: SceneSpec) -> dict[str, Any]:
     """Queue a render. Returns immediately with a job id to poll."""
-    job = QUEUE.submit(spec)
+    try:
+        job = QUEUE.submit(spec)
+    except QueueFull as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return job.to_dict()
 
 
@@ -266,9 +306,102 @@ def get_job(job_id: str) -> dict[str, Any]:
 
 @app.delete("/api/jobs/{job_id}")
 def cancel_job(job_id: str) -> dict[str, Any]:
+    """Cancel. A paused job keeps its finished images and loses its checkpoint."""
     if not QUEUE.cancel(job_id):
         raise HTTPException(status_code=409, detail="job is not cancellable")
     return {"cancelled": job_id}
+
+
+class PauseRequest(BaseModel):
+    hold_queue: bool = False
+
+
+class ResumeRequest(BaseModel):
+    force: bool = False
+
+
+class BundleResumeRequest(BaseModel):
+    bundle: str
+    force: bool = False
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def pause_job(job_id: str, body: Optional[PauseRequest] = None) -> dict[str, Any]:
+    """Pause at the next step boundary. `hold_queue` also keeps the next job from starting."""
+    try:
+        job = QUEUE.pause(job_id, hold_queue=bool(body and body.hold_queue))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"no such job: {job_id}") from exc
+    except JobStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.to_dict(include_bundle=False)
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(job_id: str, body: Optional[ResumeRequest] = None) -> dict[str, Any]:
+    """Requeue a paused job at the front. `force` resumes despite a changed environment."""
+    try:
+        job = QUEUE.resume(job_id, force=bool(body and body.force))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"no such job: {job_id}") from exc
+    except JobStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.to_dict(include_bundle=False)
+
+
+def _bundle_path(raw: str) -> Path:
+    """A bundle directory under ``outputs/``, or an HTTP error."""
+    candidate = Path(raw).resolve()
+    try:
+        candidate.relative_to(OUTPUTS_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="bundles live under outputs/") from exc
+    if not candidate.is_dir():
+        raise HTTPException(status_code=404, detail="no such bundle directory")
+    return candidate
+
+
+@app.post("/api/resume")
+def resume_bundle(body: BundleResumeRequest) -> dict[str, Any]:
+    """Resume a paused bundle left on disk, for instance by the CLI or a crash."""
+    try:
+        job = QUEUE.resume_bundle(_bundle_path(body.bundle), force=body.force)
+    except QueueFull as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except JobStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.to_dict(include_bundle=False)
+
+
+@app.get("/api/paused")
+def paused() -> dict[str, Any]:
+    """Paused jobs in this server, and resumable bundles on disk that no job holds."""
+    jobs = QUEUE.list(limit=SETTINGS.job_retention)
+    held_dirs = [
+        Path(job.bundle_dir).resolve()
+        for job in jobs
+        if job.bundle_dir and (job.status not in FINISHED or job.resumable)
+    ]
+    return {
+        "jobs": [
+            job.to_dict(include_bundle=False)
+            for job in jobs
+            if job.resumable or job.status is JobStatus.PAUSING
+        ],
+        "bundles": [
+            bundle
+            for bundle in list_resumable()
+            if Path(bundle["directory"]).resolve() not in held_dirs
+        ],
+        "held": QUEUE.stats()["held"],
+    }
+
+
+@app.post("/api/queue/release")
+def release_queue() -> dict[str, Any]:
+    """Let queued jobs start again without resuming the job that held the queue."""
+    QUEUE.release()
+    return {"held": False}
 
 
 @app.get("/api/history")

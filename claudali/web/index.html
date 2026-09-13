@@ -77,6 +77,8 @@
   dialog { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 0; max-width: 96vw; max-height: 96vh; }
   dialog img { max-width: 94vw; max-height: 88vh; display: block; }
   dialog::backdrop { background: rgba(0,0,0,.8); }
+  .job-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .job-actions button, .inline-btn { width: auto; padding: 4px 12px; }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 </style>
@@ -214,7 +216,23 @@
       <div id="status-text" class="muted">Idle. Describe a scene and press Render.</div>
       <div class="bar"><div id="progress"></div></div>
       <div id="status-detail" class="muted" style="font-size:12px"></div>
-      <button id="btn-cancel" class="hidden" style="margin-top:8px;width:auto;padding:4px 12px">Cancel job</button>
+      <ul class="err-list hidden" id="mismatch-list"></ul>
+      <div class="job-actions hidden" id="job-actions">
+        <button id="btn-pause" title="Stop at the end of the current step; the next queued job runs">Pause (next job runs)</button>
+        <button id="btn-pause-hold" title="Stop at the end of the current step and start nothing else until this job resumes">Pause &amp; hold queue</button>
+        <button id="btn-resume" class="primary">Resume</button>
+        <button id="btn-resume-force" title="Continue although what shapes the pixels changed; the bundle notes record it">Resume anyway</button>
+        <button id="btn-cancel">Cancel job</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="card-paused">
+      <h2>Paused</h2>
+      <div id="queue-held" class="hidden" style="font-size:12px;margin-bottom:6px">
+        <span class="muted">The queue is held: nothing new starts until a job resumes or it is released.</span>
+        <button id="btn-release" class="inline-btn" style="margin-left:6px">Release queue</button>
+      </div>
+      <div id="paused-list"></div>
     </div>
 
     <div class="card hidden" id="card-prompt">
@@ -244,7 +262,11 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const fileURL = (p) => `/api/file?path=${encodeURIComponent(p)}`;
-let VOCAB = null, EXAMPLES = [], exampleIndex = 0, pollTimer = null, currentJob = null;
+const esc = (text) => String(text ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const post = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+let VOCAB = null, EXAMPLES = [], exampleIndex = 0, pollTimer = null, currentJob = null, shownBundle = "";
+// Statuses a job can still move on from without anyone acting.
+const LIVE = new Set(["queued", "running", "pausing"]);
 
 /* ---------- helpers ---------------------------------------------------- */
 
@@ -429,37 +451,125 @@ function stopPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
   $("btn-render").disabled = false;
-  $("btn-cancel").classList.add("hidden");
+}
+
+function watchJob(id) {
+  if (pollTimer) clearInterval(pollTimer);
+  $("btn-render").disabled = true;
+  pollTimer = setInterval(() => pollJob(id), 1200);
+  pollJob(id);
+}
+
+// Where a paused job will carry on from, from its checkpoint summary.
+function describeCheckpoint(cp) {
+  if (!cp) return "";
+  const where = `variation ${cp.variation + 1}/${cp.variations}`;
+  return cp.mid_image ? `${where}, step ${cp.next_step}/${cp.steps}` : `start of ${where}`;
+}
+
+function showJobActions(job) {
+  const status = job ? job.status : null;
+  const refused = !!job && job.error_type === "resume_mismatch";
+  const show = (id, on) => $(id).classList.toggle("hidden", !on);
+  show("job-actions", !!job && (LIVE.has(status) || job.resumable));
+  show("btn-pause", status === "running" || status === "queued");
+  show("btn-pause-hold", LIVE.has(status) || status === "paused");
+  show("btn-resume", status === "paused");
+  show("btn-resume-force", refused);
+  show("btn-cancel", !!job && (LIVE.has(status) || job.resumable));
+  $("mismatch-list").innerHTML = refused ? job.mismatch.map((d) => `<li>${esc(d)}</li>`).join("") : "";
+  show("mismatch-list", refused);
 }
 
 async function pollJob(id) {
   try {
     const job = await api(`/api/jobs/${id}`);
     currentJob = job;
+    showJobActions(job);
+
+    // Images land one at a time; show them as they do, without redrawing on every poll.
+    const bundle = job.bundle;
+    const signature = bundle ? `${bundle.directory}|${bundle.variations.length}|${bundle.status}` : "";
+    if (bundle && bundle.variations.length && signature !== shownBundle) {
+      shownBundle = signature;
+      showBundle(bundle);
+    }
+
     const eta = job.eta_s ? ` · ~${Math.round(job.eta_s)}s left` : "";
+    const where = `variation ${job.variation + 1}/${job.total_variations} · step ${job.step}/${job.total_steps}`;
     if (job.status === "running") {
       setStatus(
         `Rendering variation ${job.variation + 1}/${job.total_variations}`,
         `step ${job.step}/${job.total_steps}${eta}`,
         job.progress
       );
+    } else if (job.status === "pausing") {
+      setStatus("Pausing after the current step…", where, job.progress);
     } else if (job.status === "queued") {
-      setStatus("Queued…", "waiting for the worker", 0);
+      setStatus(job.checkpoint ? "Queued to resume…" : "Queued…", "waiting for the worker", job.progress);
     } else {
       stopPolling();
+      const saved = `${bundle ? bundle.variations.length : 0} image(s) saved`;
       if (job.status === "done") {
         setStatus("Done", `${job.bundle.duration_s}s · ${job.bundle.directory}`, 1);
         showCompiled(job.bundle.compiled);
         showBundle(job.bundle);
         loadHistory();
+      } else if (job.status === "paused") {
+        const at = job.checkpoint ? `at ${describeCheckpoint(job.checkpoint)} · ` : "before it started · ";
+        setStatus("Paused", at + saved, job.progress);
+      } else if (job.error_type === "resume_mismatch") {
+        setStatus("Resume refused", "What shapes the pixels changed since the pause. Resume anyway to carry on; the bundle notes will record it.", job.progress);
       } else {
         setStatus(job.status === "cancelled" ? "Cancelled" : "Failed", job.error || "", 0);
       }
+      loadPaused();
     }
   } catch (err) {
     stopPolling();
     setStatus("Lost contact with the job", err.message, 0);
   }
+}
+
+// Paused jobs in this server, resumable bundles left on disk, and whether the queue is held.
+async function loadPaused() {
+  try {
+    const { jobs, bundles, held } = await api("/api/paused");
+    $("card-paused").classList.toggle("hidden", !jobs.length && !bundles.length && !held);
+    $("queue-held").classList.toggle("hidden", !held);
+    const rows = [
+      ...jobs.map((j) => ({
+        job: j.id, name: j.name, checkpoint: j.checkpoint,
+        state: j.error_type === "resume_mismatch" ? "resume refused" : j.status,
+      })),
+      ...bundles.map((b) => ({
+        bundle: b.directory, name: b.name, checkpoint: b.checkpoint,
+        state: (b.status === "running" ? "interrupted" : b.status) + " · on disk",
+      })),
+    ];
+    $("paused-list").innerHTML = rows.map((r, i) => `
+      <div class="hist">
+        <div style="flex:1">
+          <div><b>${esc(r.name || "untitled")}</b></div>
+          <div class="muted">${esc(r.state)}${r.checkpoint ? " · " + esc(describeCheckpoint(r.checkpoint)) : ""}</div>
+        </div>
+        <button class="inline-btn" data-i="${i}">${r.state === "resume refused" ? "Review" : "Resume"}</button>
+      </div>`).join("");
+    $("paused-list").querySelectorAll("button").forEach((button) => {
+      button.onclick = async () => {
+        const row = rows[Number(button.dataset.i)];
+        try {
+          if (row.state === "resume refused") { watchJob(row.job); return; }
+          const job = row.job
+            ? await api(`/api/jobs/${row.job}/resume`, post({ force: false }))
+            : await api("/api/resume", post({ bundle: row.bundle, force: false }));
+          currentJob = job;
+          watchJob(job.id);
+          loadPaused();
+        } catch (err) { setStatus("Resume failed", err.message, 0); }
+      };
+    });
+  } catch { /* the paused list is optional */ }
 }
 
 /* ---------- actions ---------------------------------------------------- */
@@ -500,20 +610,36 @@ $("btn-render").onclick = async () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(spec),
     });
-    $("btn-render").disabled = true;
-    $("btn-cancel").classList.remove("hidden");
     setStatus("Queued…", `job ${job.id.slice(0, 8)}`, 0);
     currentJob = job;
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => pollJob(job.id), 1200);
-    pollJob(job.id);
+    watchJob(job.id);
   } catch (err) { setStatus("Could not queue the render", err.message, 0); }
 };
 
 $("btn-cancel").onclick = async () => {
   if (!currentJob) return;
-  try { await api(`/api/jobs/${currentJob.id}`, { method: "DELETE" }); }
-  catch (err) { setStatus("Cancel failed", err.message); }
+  try {
+    await api(`/api/jobs/${currentJob.id}`, { method: "DELETE" });
+    watchJob(currentJob.id);
+  } catch (err) { setStatus("Cancel failed", err.message); }
+};
+
+async function jobAction(action, body, label) {
+  if (!currentJob) return;
+  try {
+    const job = await api(`/api/jobs/${currentJob.id}/${action}`, post(body));
+    currentJob = job;
+    watchJob(job.id);
+    loadPaused();
+  } catch (err) { setStatus(`${label} failed`, err.message); }
+}
+$("btn-pause").onclick = () => jobAction("pause", { hold_queue: false }, "Pause");
+$("btn-pause-hold").onclick = () => jobAction("pause", { hold_queue: true }, "Pause");
+$("btn-resume").onclick = () => jobAction("resume", { force: false }, "Resume");
+$("btn-resume-force").onclick = () => jobAction("resume", { force: true }, "Resume");
+$("btn-release").onclick = async () => {
+  try { await api("/api/queue/release", post({})); loadPaused(); }
+  catch (err) { setStatus("Release failed", err.message); }
 };
 
 $("btn-example").onclick = () => {
@@ -562,7 +688,7 @@ async function loadHistory() {
         <img src="${fileURL(b.variations[0]?.preview || "")}" alt="">
         <div>
           <div><b>${b.spec.name || b.spec.subject.primary.slice(0, 48)}</b></div>
-          <div class="muted">${b.created_at} · ${b.variations.length} img · ${b.duration_s}s</div>
+          <div class="muted">${b.created_at} · ${b.variations.length} img · ${b.duration_s}s${b.status && b.status !== "done" ? " · " + esc(b.status) : ""}</div>
         </div>
       </div>`).join("");
     box.querySelectorAll(".hist").forEach((el) => {
@@ -625,12 +751,18 @@ async function boot() {
 
   try { EXAMPLES = (await api("/api/examples")).examples; } catch { EXAMPLES = []; }
   loadHistory();
+  loadPaused();
   setInterval(async () => {
     try {
       const { stats } = await api("/api/jobs?limit=1");
-      $("chip-queue").textContent = stats.running
-        ? `rendering · ${stats.queued} queued`
-        : stats.queued ? `${stats.queued} queued` : "queue idle";
+      const parts = [];
+      if (stats.running) parts.push("rendering");
+      if (stats.queued) parts.push(`${stats.queued} queued`);
+      if (stats.paused) parts.push(`${stats.paused} paused`);
+      if (stats.held) parts.push("queue held");
+      $("chip-queue").textContent = parts.length ? parts.join(" · ") : "queue idle";
+      $("chip-queue").classList.toggle("warn", !!stats.held);
+      loadPaused();
     } catch { /* ignore */ }
   }, 5000);
 }

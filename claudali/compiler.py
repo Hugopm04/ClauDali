@@ -148,6 +148,36 @@ class CompiledPrompt:
             "regions": self.regions,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompiledPrompt":
+        """Rebuild a compiled prompt exactly as it was, without recompiling.
+
+        A resumed render must use the prompt frozen when it started: compiling
+        the spec again would pick up any vocabulary edit made in between.
+        """
+
+        def count(value: Optional[dict[str, Any]]) -> Optional[tokens.TokenCount]:
+            return tokens.TokenCount(**value) if value else None
+
+        return cls(
+            prompt=data["prompt"],
+            negative_prompt=data["negative_prompt"],
+            model=data["model"],
+            steps=data["steps"],
+            cfg=data["cfg"],
+            sampler=data["sampler"],
+            width=data["width"],
+            height=data["height"],
+            fragments=[Fragment(**item) for item in data.get("fragments", [])],
+            negative_fragments=[Fragment(**item) for item in data.get("negative_fragments", [])],
+            warnings=list(data.get("warnings", [])),
+            notes=list(data.get("notes", [])),
+            tokens=count(data.get("tokens")),
+            negative_tokens=count(data.get("negative_tokens")),
+            anchors=list(data.get("anchors", [])),
+            regions=list(data.get("regions", [])),
+        )
+
 
 @functools.lru_cache(maxsize=1)
 def load_vocabulary() -> dict[str, Any]:

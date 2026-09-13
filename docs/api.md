@@ -59,6 +59,8 @@ curl -X POST http://127.0.0.1:8188/api/render \
 }
 ```
 
+Returns 503 when the queue already holds `CLAUDALI_MAX_QUEUE` waiting jobs.
+
 ### `GET /api/jobs/{id}`
 
 Poll a job. Polling once every 1–2 seconds is plenty.
@@ -76,17 +78,88 @@ Poll a job. Polling once every 1–2 seconds is plenty.
 }
 ```
 
-`status` is `queued`, `running`, `done`, `error` or `cancelled`. When `done`, the
-response also contains `bundle` — see below.
+`status` is `queued`, `running`, `pausing`, `paused`, `done`, `error` or
+`cancelled`. Once the job has started, the response also contains `bundle` —
+see below — which grows as each image lands, so finished variations can be
+looked at before the last one is done. `bundle_dir` is its directory,
+`checkpoint` says where a paused job will carry on from, and `resumable` says
+whether it can be resumed.
 
 ### `DELETE /api/jobs/{id}`
 
-Cancel. A queued job dies immediately; a running one stops at its next sampler
-step, at most a few seconds later. Returns 409 if the job already finished.
+Cancel. A queued or paused job ends immediately; a running one stops at its next
+sampler step. A cancelled job keeps the images it finished; its checkpoint is
+deleted, so it cannot be resumed. Returns 409 if the job already finished.
 
 ### `GET /api/jobs?limit=50`
 
 Recent jobs without their bundles, plus queue statistics.
+
+---
+
+## Pausing and resuming
+
+A running job can be paused at any sampler step and resumed later, **bit for
+bit**: the latents, the sampler's history and the random stream are saved to the
+bundle's `checkpoint/` folder, so the resumed image is identical to an
+uninterrupted one, even after a restart. A pause is honoured when the current
+step ends, which on a 6 GB card can take ~25 s; until then the job is `pausing`.
+
+### `POST /api/jobs/{id}/pause`
+
+Body `{"hold_queue": false}` (optional). With `hold_queue: false` the next queued
+job starts as soon as this one has paused. With `true` the whole queue is held:
+nothing starts until this job resumes or the queue is released. A queued job
+can be paused too, and simply waits. Returns the job; 409 if it has finished.
+
+### `POST /api/jobs/{id}/resume`
+
+Body `{"force": false}` (optional). Puts a paused job back **at the front** of the
+queue, and releases the hold if this job caused it. When the worker picks it up
+it first checks that nothing which shapes the pixels has changed since the
+pause: the model's files, the torch, diffusers, transformers and compel
+versions, precision, cuDNN state, attention slicing, VAE settings, sampler,
+size, and the control and init images. If something has, the job ends in
+`error` with `"error_type": "resume_mismatch"` and a `mismatch` list naming each
+difference; its checkpoint is untouched. Resuming again with `"force": true`
+carries on anyway and records the differences in the bundle notes.
+
+### `POST /api/resume`
+
+Body `{"bundle": "<bundle directory>", "force": false}`. Resumes a bundle found on
+disk that no job in this server holds: one paused from the command line, or left
+behind when a process died mid-render. The directory must be under `outputs/`.
+Returns the new job.
+
+### `GET /api/paused`
+
+```json
+{
+  "jobs": [ { "id": "9f2c1a...", "status": "paused", "checkpoint": { "...": "see below" } } ],
+  "bundles": [
+    {
+      "directory": "C:\\...\\outputs\\2026-09-13_101500_forest-fairies_4be1c2d0",
+      "job_id": "4be1c2d0...", "name": "forest fairies", "status": "paused",
+      "images": 1, "preview": "...\\001_seed1848.preview.jpg",
+      "checkpoint": { "...": "see below" }
+    }
+  ],
+  "held": false
+}
+```
+
+A bundle whose `status` is still `running` was interrupted: nothing is running it.
+
+### `POST /api/queue/release`
+
+Lets queued jobs start again without resuming the job that held the queue.
+
+### Stopping the server
+
+Ctrl+C on the server pauses the running job at its next step and holds the queue.
+The paused job and every job not yet started are written to `runs/queue.json`,
+and the next start restores them, with the queue held. Ctrl+C a second time
+stops waiting; that job then resumes from the start of the variation it was on.
 
 ---
 
@@ -128,12 +201,36 @@ A finished job carries a `bundle`, which is also written to disk as
   "notes": [],
   "duration_s": 184.2,
   "task": "txt2img",
-  "device": { "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0, "...": "..." }
+  "device": { "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0, "...": "..." },
+  "status": "done",
+  "checkpoint": null,
+  "error": null
 }
 ```
 
 `compiled.fragments` is the audit trail: every phrase in the prompt with the spec
 field it came from and the weight applied.
+
+`status` is `running`, `paused`, `done`, `aborted`, `cancelled` or `error`, and
+`result.json` is rewritten with it each time an image lands. `aborted` means the
+job was stopped hard, by a second Ctrl+C on the command line: it can still be
+resumed, from the start of the variation it was on. `cancelled` cannot.
+`duration_s` counts rendering time across every session of a resumed job.
+Bundles written before pausing existed have no `status` and are complete.
+
+While a job can be resumed, `checkpoint` summarises where it will carry on:
+
+```json
+{
+  "stage": "base", "variation": 1, "next_step": 13, "steps": 32,
+  "variations": 4, "completed": [0], "mid_image": true,
+  "reason": "pause", "paused_at": "2026-09-13T10:22:41"
+}
+```
+
+`variation` is zero-based. `mid_image` is false at a variation boundary, where
+the variation restarts from step 0 with its original seed, which is still exact.
+`reason` is `pause`, `shutdown`, `abort`, or `running` for a process that died.
 
 ### Diagnostics
 
@@ -237,7 +334,10 @@ Designed so a caller can learn the format without reading documentation.
     "fp16_conv_broken_without_cudnn": false, "vae_upcast": "auto",
     "offload": "model", "dtype": "float16"
   },
-  "queue": { "queued": 0, "running": 1, "done": 12, "error": 0, "worker_alive": true }
+  "queue": {
+    "queued": 0, "running": 1, "pausing": 0, "paused": 0, "done": 12, "error": 0,
+    "cancelled": 0, "held": false, "worker_alive": true
+  }
 }
 ```
 
@@ -292,7 +392,7 @@ print(requests.post(f"{BASE}/api/compile", json=spec).json()["prompt"])
 job = requests.post(f"{BASE}/api/render", json=spec).json()
 while True:
     status = requests.get(f"{BASE}/api/jobs/{job['id']}").json()
-    if status["status"] in {"done", "error", "cancelled"}:
+    if status["status"] in {"done", "error", "cancelled", "paused"}:
         break
     print(f"{status['progress']*100:.0f}%  eta {status.get('eta_s')}s")
     time.sleep(2)

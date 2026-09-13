@@ -11,20 +11,41 @@ Run with:  .venv\\Scripts\\python -m pytest -q
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import logging
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from claudali.compiler import _assemble, compile_spec, load_vocabulary
+from claudali.__main__ import pause_on_interrupt
+from claudali.bundle import BundleWriter, read_bundle
+from claudali.compiler import CompiledPrompt, _assemble, compile_spec, load_vocabulary
 from claudali.compose import apply_overlays, apply_postprocess, quantize_to_palette
 from claudali.control.maps import build_depth_map, build_edge_map, build_region_masks
 from claudali.diagnostics import analyse
 from claudali.engine import quiet
+from claudali.engine.checkpoint import (
+    RenderController,
+    RenderPaused,
+    ResumeMismatch,
+    ResumeState,
+    StepPaused,
+    StepState,
+    capture_scheduler_state,
+    check_fingerprint,
+    load_checkpoint,
+    restore_scheduler_state,
+    save_checkpoint,
+)
 from claudali.engine.pipelines import _plan_cudnn, _should_upcast_vae
+from claudali.engine.render import RenderedImage, RenderResult
+from claudali.jobs import JobQueue, JobStatus, QueueFull
 from claudali.engine.regional import grid_for
 from claudali.spec import ASPECT_BUCKETS, Overlay, Postprocess, SceneSpec, load_spec
 from claudali.tokens import CHUNK_CONTENT_TOKENS, count_content_tokens, estimate_tokens, pack
@@ -736,3 +757,357 @@ def test_the_long_sequence_warning_is_silenced_only_while_compel_encodes():
         logger.warning(text)
     assert messages == [text, text]
     assert logger.filters == []
+
+
+# ---------------------------------------------------------------------------
+# Pausing and resuming
+# ---------------------------------------------------------------------------
+
+
+def test_the_server_modules_do_not_import_torch():
+    """CLAUDE.md's import-cost rule, which a render refactor breaks most easily."""
+    code = "import sys, claudali.api, claudali.jobs, claudali.bundle; print('torch' in sys.modules)"
+    run = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=False
+    )
+    assert run.stdout.strip() == "False", run.stderr[-2000:]
+
+
+def test_a_compiled_prompt_survives_the_trip_through_state_json():
+    """A resume uses the prompt frozen when the job started, so it must come back whole."""
+    compiled = compile_spec(fairy_spec())
+    frozen = json.loads(json.dumps(compiled.to_dict()))
+    assert CompiledPrompt.from_dict(frozen).to_dict() == compiled.to_dict()
+
+
+def test_a_changed_environment_refuses_to_resume_unless_forced():
+    saved = {"diffusers": "0.40.0", "cudnn_enabled": False, "steps": 32}
+    assert check_fingerprint(saved, dict(saved), force=False) == []
+
+    current = {**saved, "diffusers": "0.41.0", "cudnn_enabled": True}
+    with pytest.raises(ResumeMismatch) as caught:
+        check_fingerprint(saved, current, force=False)
+    assert caught.value.differences == [
+        "cudnn_enabled: False -> True",
+        "diffusers: '0.40.0' -> '0.41.0'",
+    ]
+
+    notes = check_fingerprint(saved, current, force=True)
+    assert len(notes) == 1 and "diffusers: '0.40.0' -> '0.41.0'" in notes[0]
+
+
+def test_scheduler_state_keeps_what_steps_and_copies_it():
+    torch = pytest.importorskip("torch")
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.config = {"solver_order": 2}
+            self._internal_dict = {"solver_order": 2}
+            self._step_index = 3
+            self.lower_order_nums = 2
+            self.model_outputs = [None, torch.arange(4.0)]
+            self.solver = object()
+
+    source = FakeScheduler()
+    state = capture_scheduler_state(source)
+    assert set(state) == {"_step_index", "lower_order_nums", "model_outputs"}
+
+    source.model_outputs[1].add_(100)  # a later step must not reach into the snapshot
+    target = FakeScheduler()
+    target._step_index, target.model_outputs = None, [None, None]
+    restore_scheduler_state(target, state)
+    assert target._step_index == 3
+    assert torch.equal(target.model_outputs[1], torch.arange(4.0))
+
+
+def test_a_checkpoint_round_trips_through_a_weights_only_load(tmp_path):
+    torch = pytest.importorskip("torch")
+    generator = torch.Generator().manual_seed(7)
+    torch.randn(3, generator=generator)
+    compiled = compile_spec(minimal()).to_dict()
+    state = ResumeState(
+        seeds=[11, 12],
+        variation=1,
+        completed=[0],
+        compiled=compiled,
+        fingerprint={"torch": "x"},
+        reason="pause",
+        step=StepState(
+            next_step=2,
+            latents=torch.randn(1, 4, 8, 8).half(),
+            scheduler={"_step_index": 2, "model_outputs": [None, {"tensor": torch.ones(2), "device": "cpu"}]},
+            generator=generator.get_state(),
+        ),
+    )
+    save_checkpoint(tmp_path, state, job_id="abc")
+
+    meta = json.loads((tmp_path / "checkpoint" / "state.json").read_text(encoding="utf-8"))
+    assert (meta["has_step_state"], meta["next_step"], meta["job_id"]) == (True, 2, "abc")
+
+    loaded = load_checkpoint(tmp_path)  # torch.load(weights_only=True) inside
+    assert (loaded.seeds, loaded.completed, loaded.next_step) == ([11, 12], [0], 2)
+    assert loaded.step.latents.dtype == torch.float16
+    assert torch.equal(loaded.step.latents, state.step.latents)
+    assert torch.equal(loaded.step.generator, state.step.generator)
+
+    # A variation-boundary checkpoint written later must not leave stale tensors trusted.
+    save_checkpoint(
+        tmp_path, ResumeState(seeds=[11, 12], variation=1, completed=[0], compiled=compiled, fingerprint={})
+    )
+    assert not (tmp_path / "checkpoint" / "state.pt").exists()
+    assert load_checkpoint(tmp_path).step is None
+
+
+def _tiny_sdxl(sampler: str):
+    """A random SDXL pipeline small enough to run on the CPU in well under a second.
+
+    Prompt embeddings are passed in directly, so no tokenizer, text encoder,
+    weights or network is needed. The time-embedding input is 6 * 8 + 32.
+    """
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+    from claudali.engine.pipelines import _build_scheduler
+
+    torch.manual_seed(0)
+    unet = diffusers.UNet2DConditionModel(
+        block_out_channels=(32, 64),
+        layers_per_block=2,
+        sample_size=16,
+        in_channels=4,
+        out_channels=4,
+        down_block_types=("DownBlock2D", "CrossAttnDownBlock2D"),
+        up_block_types=("CrossAttnUpBlock2D", "UpBlock2D"),
+        attention_head_dim=(2, 4),
+        use_linear_projection=True,
+        addition_embed_type="text_time",
+        addition_time_embed_dim=8,
+        transformer_layers_per_block=(1, 2),
+        projection_class_embeddings_input_dim=80,
+        cross_attention_dim=64,
+        norm_num_groups=1,
+    )
+    vae = diffusers.AutoencoderKL(
+        block_out_channels=[32, 64],
+        in_channels=3,
+        out_channels=3,
+        down_block_types=["DownEncoderBlock2D"] * 2,
+        up_block_types=["UpDecoderBlock2D"] * 2,
+        latent_channels=4,
+    )
+    pipe = diffusers.StableDiffusionXLPipeline(
+        vae=vae,
+        text_encoder=None,
+        text_encoder_2=None,
+        tokenizer=None,
+        tokenizer_2=None,
+        unet=unet,
+        scheduler=diffusers.EulerDiscreteScheduler(),
+        add_watermarker=False,
+    )
+    pipe.set_progress_bar_config(disable=True)
+    assert _build_scheduler(pipe, sampler) == []
+    return pipe
+
+
+def _tiny_call() -> dict:
+    import torch
+
+    embeds = torch.Generator().manual_seed(123)
+    return {
+        "prompt_embeds": torch.randn(1, 8, 64, generator=embeds),
+        "pooled_prompt_embeds": torch.randn(1, 32, generator=embeds),
+        "negative_prompt_embeds": torch.randn(1, 8, 64, generator=embeds),
+        "negative_pooled_prompt_embeds": torch.randn(1, 32, generator=embeds),
+        "num_inference_steps": 5,
+        "guidance_scale": 5.0,
+        "height": 32,
+        "width": 32,
+    }
+
+
+@pytest.mark.parametrize(
+    "sampler, pause_after",
+    [("dpmpp_2m_karras", 2), ("euler_a", 2), ("dpmpp_2m_karras", 5)],
+    ids=["multistep-history", "ancestral-noise", "after-the-last-step"],
+)
+def test_a_paused_render_resumes_bit_for_bit(tmp_path, sampler, pause_after):
+    """The whole promise of pause and resume, on the production denoise helper.
+
+    dpmpp_2m_karras carries a model-output history from step to step; euler_a
+    draws fresh noise from the generator at every step. Both must continue
+    exactly, and so must a pause after the last step. The one pipeline serves
+    every call, as the cached one does in the server, so a hook left installed
+    would show up as a wrong final run.
+
+    This also locks the diffusers loop shape the resume relies on: if an upgrade
+    moves `_interrupt` or `prepare_latents`, it fails here. Fix the hooks in
+    engine/checkpoint.py; do not loosen this.
+    """
+    torch = pytest.importorskip("torch")
+    from claudali.engine.render import denoise
+
+    pipe = _tiny_sdxl(sampler)
+    reference = denoise(pipe, _tiny_call(), seed=42)
+
+    controller = RenderController()
+
+    def on_step(step: int) -> None:
+        if step == pause_after:
+            controller.pause_requested = True
+
+    with pytest.raises(StepPaused) as caught:
+        denoise(pipe, _tiny_call(), seed=42, controller=controller, on_step=on_step)
+    assert caught.value.step.next_step == pause_after
+
+    # Through the disk, as a real pause goes.
+    save_checkpoint(
+        tmp_path,
+        ResumeState(seeds=[42], variation=0, completed=[], compiled={}, fingerprint={}, step=caught.value.step),
+    )
+
+    # Equal latents alone would also come from quietly re-running every step with
+    # the same seed, so count the UNet calls: only the steps after the pause may run.
+    unet_calls: list[int] = []
+    hook = pipe.unet.register_forward_pre_hook(lambda _module, _args: unet_calls.append(1))
+    try:
+        resumed = denoise(pipe, _tiny_call(), seed=42, resume=load_checkpoint(tmp_path).step)
+    finally:
+        hook.remove()
+    assert len(unet_calls) == 5 - pause_after
+    assert torch.equal(resumed, reference)
+    assert torch.equal(denoise(pipe, _tiny_call(), seed=42), reference)
+
+
+def test_first_ctrl_c_pauses_and_the_second_aborts():
+    controller = RenderController()
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        handler = pause_on_interrupt(controller, out=io.StringIO())
+        signal.signal(signal.SIGINT, handler)
+        handler(signal.SIGINT, None)
+        assert controller.pause_requested
+        second = signal.getsignal(signal.SIGINT)
+        assert second is signal.default_int_handler
+        with pytest.raises(KeyboardInterrupt):
+            second(signal.SIGINT, None)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _queue(**options) -> JobQueue:
+    return JobQueue(**{"max_size": 8, "retention": 50, "autostart": False, **options})
+
+
+def test_a_resumed_job_goes_to_the_front_of_the_queue():
+    queue = _queue()
+    first, _second, third = (queue.submit(minimal()) for _ in range(3))
+    queue.pause(third.id)
+    assert third.status is JobStatus.PAUSED
+    queue.resume(third.id)
+    assert queue._take_next(timeout=0) is third
+    assert queue._take_next(timeout=0) is first
+
+
+def test_pause_and_hold_keeps_the_next_job_waiting_until_that_job_resumes():
+    queue = _queue()
+    running, waiting = queue.submit(minimal()), queue.submit(minimal())
+    assert queue._take_next(timeout=0) is running
+
+    queue.pause(running.id, hold_queue=True)
+    assert running.status is JobStatus.PAUSING and running.controller.pause_requested
+    running.status = JobStatus.PAUSED  # what the worker does once the checkpoint lands
+    queue._settle(running)
+    assert queue._take_next(timeout=0) is None
+    assert queue.stats()["held"]
+
+    queue.resume(running.id)
+    assert not queue.stats()["held"]
+    assert queue._take_next(timeout=0) is running
+    assert queue._take_next(timeout=0) is waiting
+
+
+def test_a_plain_pause_lets_the_next_job_run():
+    queue = _queue()
+    running, waiting = queue.submit(minimal()), queue.submit(minimal())
+    queue._take_next(timeout=0)
+    queue.pause(running.id)
+    running.status = JobStatus.PAUSED
+    queue._settle(running)
+    assert queue._take_next(timeout=0) is waiting
+
+
+def test_releasing_the_queue_does_not_resume_the_job_that_held_it():
+    queue = _queue()
+    held, waiting = queue.submit(minimal()), queue.submit(minimal())
+    queue.pause(held.id, hold_queue=True)
+    assert queue._take_next(timeout=0) is None
+    queue.release()
+    assert queue._take_next(timeout=0) is waiting
+    assert held.status is JobStatus.PAUSED
+
+
+def test_a_resume_refused_for_a_mismatch_can_be_forced():
+    queue = _queue()
+    job = queue.submit(minimal())
+    queue._take_next(timeout=0)
+    job.status, job.error_type, job.mismatch = JobStatus.ERROR, "resume_mismatch", ["gpu: 'a' -> 'b'"]
+    queue._settle(job)
+    queue.resume(job.id, force=True)
+    assert (job.status, job.force_resume, job.mismatch) == (JobStatus.QUEUED, True, [])
+    assert queue._take_next(timeout=0) is job
+
+
+def test_the_queue_comes_back_held_after_a_restart(tmp_path):
+    queue = _queue()
+    paused = queue.submit(minimal())
+    waiting = queue.submit(minimal(subject={"primary": "a cast iron teapot"}))
+    queue.pause(paused.id)
+    path = tmp_path / "queue.json"
+    assert queue.save(path) == 2
+
+    restarted = _queue()
+    assert restarted.restore(path) == 2
+    assert not path.exists(), "a file left behind would restore the same jobs twice"
+    assert restarted.get(paused.id).status is JobStatus.PAUSED
+    assert restarted.get(waiting.id).status is JobStatus.QUEUED
+    assert restarted.stats()["held"] and restarted._take_next(timeout=0) is None
+
+    restarted.release()
+    assert restarted._take_next(timeout=0).spec.subject.primary == "a cast iron teapot"
+
+
+def test_a_full_queue_says_so_instead_of_blocking():
+    queue = _queue(max_size=1)
+    queue.submit(minimal())
+    with pytest.raises(QueueFull):
+        queue.submit(minimal())
+
+
+def test_a_bundle_is_written_as_each_image_lands(tmp_path):
+    spec = minimal(render={"variations": 3, "seed": 5})
+    compiled = compile_spec(spec)
+    writer = BundleWriter.create(spec, compiled, "job12345", tmp_path / "bundle")
+    manifest = read_bundle(writer.directory)
+    assert (manifest["status"], manifest["variations"]) == ("running", [])
+
+    boundary = ResumeState(seeds=[5, 6, 7], variation=0, completed=[], compiled=compiled.to_dict(), fingerprint={})
+    writer.record_checkpoint(boundary)
+    for index in (0, 1):
+        writer.add_variation(RenderedImage(image=swatch(color=(40 * index, 90, 160)), seed=5 + index, index=index))
+        assert len(read_bundle(writer.directory)["variations"]) == index + 1
+    assert Path(read_bundle(writer.directory)["contact_sheet"]).is_file()
+
+    state = ResumeState(seeds=[5, 6, 7], variation=2, completed=[0, 1], compiled=compiled.to_dict(), fingerprint={})
+    writer.pause(RenderPaused(state, RenderResult(images=[], compiled=compiled, notes=["a note"], duration_s=12.5)))
+    manifest = read_bundle(writer.directory)
+    assert manifest["status"] == "paused"
+    assert manifest["checkpoint"]["variation"] == 2 and manifest["checkpoint"]["reason"] == "pause"
+
+    reopened = BundleWriter.open(writer.directory)
+    assert reopened.completed_indices() == [0, 1]
+    reopened.add_variation(RenderedImage(image=swatch(), seed=7, index=2))
+    reopened.complete(RenderResult(images=[], compiled=compiled, notes=["a note"], duration_s=3.0))
+    manifest = read_bundle(writer.directory)
+    assert (manifest["status"], manifest["duration_s"], len(manifest["variations"])) == ("done", 15.5, 3)
+    assert manifest["notes"].count("a note") == 1
+    assert not (writer.directory / "checkpoint").exists()
