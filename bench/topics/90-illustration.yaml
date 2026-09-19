@@ -1,0 +1,87 @@
+illustration:
+  title: Illustration styles
+  why: >
+    The one family where the checkpoint choice should dominate: dreamshaper is
+    a painterly fine-tune and juggernaut a photographic one, so if the
+    cross-model comparison shows nothing here it shows nothing anywhere. Each
+    sub-case pins a medium key and varies only the subject, so a weak result
+    points at the medium rather than at the content.
+  intent: painterly
+  rich:
+    shot: scene
+    detail: high
+    rule: thirds
+  subcases:
+    anime:
+      title: Anime
+      why: A style SDXL knows well but base handles worse than the fine-tunes.
+      rich: {medium: cel_shaded, lighting: rim_light, palette: candy}
+      prompts:
+        - subject: a girl in a school uniform standing on a station platform
+        - subject: a mecha pilot in a cockpit, warning lights on her face
+        - subject: a quiet street of shops at dusk, no people
+
+    comic:
+      title: Comic art
+      why: Ink weight and flat colour, plus panel conventions the model may invent.
+      rich: {medium: comic, movement: noir, palette: high_contrast_bw}
+      prompts:
+        - subject: a detective in a trenchcoat under a streetlight
+        - subject: a superhero landing hard on a rooftop
+          rich: {palette: jewel_tones, movement: expressionism}
+        - subject: two figures arguing across a diner table
+
+    oil_painting:
+      title: Oil painting
+      why: Visible brushwork and impasto, which flattens badly when a model fails.
+      rich: {medium: oil_impasto, movement: impressionism, lighting: golden_hour}
+      prompts:
+        - subject: a harbour with fishing boats at dawn
+        - subject: a still life of lemons and a pewter jug
+          rich: {medium: oil_classical, movement: baroque, lighting: chiaroscuro}
+        - subject: a wheat field under a turbulent sky
+          rich: {movement: post_impressionism}
+
+    watercolor:
+      title: Watercolour
+      why: Bleeding edges and paper texture, the opposite of oil's opacity.
+      rich: {medium: watercolor, lighting: high_key, palette: pastel, detail: moderate}
+      prompts:
+        - subject: a village street in the rain
+        - subject: a single magnolia branch in blossom
+        - subject: a hillside of terraced fields
+
+    pixel_art:
+      title: Pixel art
+      why: >
+        A hard constraint SDXL cannot satisfy: real pixel art has a fixed
+        grid, and diffusion has no notion of one. Expect near-miss results,
+        and note whether game_asset's intent helps.
+      intent: game_asset
+      rich: {medium: pixel_art, palette: gameboy, detail: minimal, rule: centered}
+      prompts:
+        - subject: a side-scrolling platformer hero sprite
+        - subject: a small pixel art tavern interior
+          rich: {palette: earth_tones}
+        - subject: an isometric pixel art tileset of grass and stone
+          rich: {medium: isometric}
+
+    vector_flat:
+      title: Flat vector
+      why: Hard edges and flat fills, which diffusion softens by nature.
+      intent: graphic
+      rich: {medium: vector_flat, palette: candy, detail: minimal, rule: centered}
+      prompts:
+        - subject: a flat illustration of a city skyline
+        - subject: a set of flat weather icons on one sheet
+        - subject: a flat portrait of a woman in three colours
+
+    concept_art:
+      title: Concept art
+      why: The style most of SDXL's aesthetic training points at; the easy case.
+      rich: {medium: concept_art, lighting: volumetric, detail: intricate, shot: extreme_wide}
+      prompts:
+        - subject: a vast hall carved into a cliff face, tiny figures for scale
+        - subject: an airship moored above a desert trading post
+        - subject: a frozen battlefield the morning after
+          rich: {palette: desaturated, lighting: overcast}

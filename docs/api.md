@@ -216,6 +216,23 @@ A finished job carries a `bundle`, which is also written to disk as
   "duration_s": 184.2,
   "task": "txt2img",
   "device": { "gpu": "NVIDIA GeForce GTX 1660 Ti", "vram_gb": 6.0, "...": "..." },
+  "timing": {
+    "total_s": 184.2,
+    "load_s": 41.8,
+    "stages": { "base": { "runs": 1, "total_s": 118.4, "steps": 32, "s_per_step": 3.62 } },
+    "steps":  { "base": { "count": 32, "mean_s": 3.62, "median_s": 3.55,
+                          "min_s": 3.4, "max_s": 9.1, "first_s": 9.1 } },
+    "spans": [ { "name": "load", "seconds": 41.8, "kind": "base", "model": "juggernaut-xl" },
+               { "name": "decode", "seconds": 24.9, "device": "gpu", "tiled": true } ]
+  },
+  "memory": {
+    "ram_total_gb": 16.6, "ram_free_start_gb": 9.7,
+    "ram_free_end_gb": 1.4, "ram_free_min_gb": 0.9,
+    "ram_samples": 92, "sample_interval_s": 2.0,
+    "vram_peak_allocated_gb": 5.47, "vram_peak_reserved_gb": 5.88
+  },
+  "sessions": [ { "at": "2026-09-19T19:13:21", "duration_s": 184.2,
+                  "timing": { "...": "..." }, "memory": { "...": "..." } } ],
   "status": "done",
   "checkpoint": null,
   "error": null
@@ -246,6 +263,26 @@ job was stopped hard, by a second Ctrl+C on the command line: it can still be
 resumed, from the start of the variation it was on. `cancelled` cannot.
 `duration_s` counts rendering time across every session of a resumed job.
 Bundles written before pausing existed have no `status` and are complete.
+
+`timing` and `memory` describe **only the most recent session**, while
+`sessions` keeps one entry per render call. They are deliberately not summed
+the way `duration_s` is: each resume reloads the model and re-measures its own
+first step, so adding two sessions' load times together would describe a render
+that never happened. When a number looks wrong, check `sessions` first.
+
+In `timing`, `s_per_step` is measured from the steps themselves rather than
+divided out of the stage total, which also includes the pipeline's own setup.
+`first_s` is reported separately because the first step of a stage is where
+paging shows up — after a CPU decode short of RAM it has been twelve times the
+others. In `memory`, `ram_free_start_gb` is read before the first weight loads,
+which is what explains the decode path `auto` chose; `ram_free_min_gb` comes
+from a background thread sampling every two seconds, because the trough falls
+between the decode plan's own reading and the end of the render. On Windows,
+`vram_peak_reserved_gb` can exceed the card: an allocation that does not fit
+spills into shared system memory rather than failing, and a figure above the
+card's size is the explanation for a slow render, not a bad reading.
+
+Bundles written before this existed have neither field.
 
 While a job can be resumed, `checkpoint` summarises where it will carry on:
 

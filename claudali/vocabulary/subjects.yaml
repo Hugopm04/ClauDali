@@ -30,12 +30,15 @@ person_words:
   - baby
   - baker
   - bard
+  - biker
   - blacksmith
+  - boxer
   - boy
   - captain
   - chef
   - child
   - children
+  - climber
   - couple
   - cowboy
   - crowd
@@ -53,6 +56,7 @@ person_words:
   - fairies
   - fairy
   - farmer
+  - fencer
   - figure
   - figures
   - fisherman
@@ -65,17 +69,25 @@ person_words:
   - goddess
   - guard
   - guitarist
+  - hand
+  - hands
   - hero
-  - hunter
+  - hiker
   - human
   - humans
+  - hunter
+  - infant
+  - jockey
+  - kayaker
   - keeper
   - kid
   - king
   - knight
   - lady
   - librarian
+  - luthier
   - man
+  - mason
   - mechanic
   - men
   - merchant
@@ -89,6 +101,7 @@ person_words:
   - nymph
   - orc
   - painter
+  - patient
   - people
   - person
   - pianist
@@ -98,28 +111,37 @@ person_words:
   - poet
   - portrait
   - priest
-  - princess
   - prince
+  - princess
   - queen
   - ranger
   - rider
   - robot
+  - rower
+  - runner
   - sailor
   - samurai
   - scholar
   - scientist
   - scribe
   - shepherd
+  - skater
+  - skier
   - smith
   - soldier
   - sorcerer
+  - sprinter
   - sprite
+  - surfer
   - swimmer
   - teacher
+  - teen
+  - teenager
   - thief
+  - toddler
   - tourist
-  - traveller
   - traveler
+  - traveller
   - troll
   - vampire
   - villager

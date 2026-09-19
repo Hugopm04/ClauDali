@@ -1,0 +1,107 @@
+text_signage:
+  title: Text and signage
+  why: >
+    Diffusion models cannot spell, and SDXL is worse at it than most. This
+    family exists to measure how bad, and to make the case for compose.py's
+    real lettering: the overlay path draws text that is correct by
+    construction, and the accuracy battery renders the same words both ways.
+  intent: photoreal
+  rich:
+    shot: scene
+    lens: 50mm
+    lighting: overcast
+    focus: tack_sharp
+    rule: centered
+  subcases:
+    shop_sign:
+      title: Shop signs
+      why: Short words at large size, the easiest case the model still fails.
+      prompts:
+        - subject: a painted shopfront sign reading BAKERY above a window
+        - subject: a hanging pub sign reading THE GREEN MAN
+        - subject: a neon sign reading OPEN in a cafe window
+          rich: {lighting: neon, palette: neon_noir}
+
+    book_cover:
+      title: Book covers
+      why: Title, author and layout together; a whole graphic design to get wrong.
+      intent: graphic
+      rich: {shot: tableau, lens: null, focus: null, lighting: high_key, rule: centered}
+      prompts:
+        - subject: a hardback book cover with the title THE LONG SUMMER
+        - subject: a worn paperback spine on a shelf, title legible
+        - subject: a stack of three books seen from the side, titles readable
+
+    label:
+      title: Labels
+      why: Small text on a curved surface, the hardest legibility case.
+      rich: {shot: tight, lens: macro_lens, lighting: softbox}
+      prompts:
+        - subject: a wine bottle label reading CHATEAU MARGAUX 1998
+        - subject: a jam jar with a handwritten label reading STRAWBERRY
+        - subject: a medicine bottle with a printed dosage label
+
+    graffiti:
+      title: Graffiti
+      why: >
+        Letterforms the model is allowed to distort, so it should do better
+        here than on print. Whether it does is the question.
+      rich: {shot: wide, lens: 35mm, lighting: harsh_noon}
+      prompts:
+        - subject: a wall tagged with large bubble letters spelling FLOW
+        - subject: a stencilled slogan on a railway bridge
+        - subject: a shutter covered in overlapping tags
+
+abstract:
+  title: Abstract and pattern
+  why: >
+    No subject to be wrong about, so this isolates texture and colour. It is
+    also where post.seamless and palette_lock have something to act on.
+  intent: graphic
+  rich:
+    rule: centered
+    detail: intricate
+    contrast: high
+  subcases:
+    geometric_pattern:
+      title: Geometric pattern
+      why: Precision and repetition, where drift is immediately visible.
+      rich: {medium: vector_flat, movement: bauhaus, palette: high_contrast_bw}
+      prompts:
+        - subject: a repeating pattern of interlocking triangles
+        - subject: concentric circles in three flat colours
+          rich: {palette: candy}
+        - subject: an islamic geometric tile pattern, eightfold symmetry
+          rich: {movement: art_nouveau, palette: jewel_tones}
+
+    fluid:
+      title: Fluid and marbling
+      why: Smooth continuous gradients, the softest thing a tiled decode must carry.
+      intent: photoreal
+      rich: {medium: null, shot: macro, lighting: softbox, palette: jewel_tones}
+      prompts:
+        - subject: ink dispersing in water
+        - subject: marbled paper in deep blues and gold
+        - subject: oil and water separating on a dark surface
+
+    fractal:
+      title: Fractal structure
+      why: Self-similar detail across scales, which either holds or collapses.
+      rich: {medium: digital_painting, palette: cyber_magenta, detail: intricate}
+      prompts:
+        - subject: a recursive branching structure fading into detail
+        - subject: a spiral of self-similar shells
+        - subject: a mandelbrot-like boundary rendered in deep colour
+
+    texture_tile:
+      title: Seamless textures
+      why: >
+        The one sub-case with an objective test: does post.seamless actually
+        tile. CLAUDE.md documents it as a cross-fade heuristic, good for
+        organic and visibly wrong for structured, and this checks that claim.
+      intent: game_asset
+      rich: {medium: null, shot: macro, angle: top_down, lighting: softbox, rule: centered}
+      prompts:
+        - subject: a seamless mossy cobblestone texture, top down
+        - subject: a seamless rough plaster wall texture
+        - subject: a seamless woven basket texture

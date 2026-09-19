@@ -15,6 +15,18 @@ Times below are estimates from what has been measured on the GTX 1660 Ti
 laptop: 23–26 s per step at 1344×768, ~10–13 s per step at 768×768, ~40 s to
 load SDXL base, 30–90 s for Juggernaut.
 
+## The systematic version of this
+
+This file is the hand checklist: run these commands, look at these things. For
+the same questions asked exhaustively and unattended, see
+[`bench/`](../../bench/README.md) — 1,816 items covering every option on three
+fixed scenes, 270 subject prompts on all three checkpoints, a prompt-accuracy
+battery, and a smoke pass over every path listed as never tested below. It is
+resumable with Ctrl+C and writes an HTML gallery and a CSV of every measurement.
+
+Use this file when you want an answer today. Use the benchmark when you want
+all the answers and have weeks of idle machine.
+
 ## What has never been tested
 
 | Change | State | Section |

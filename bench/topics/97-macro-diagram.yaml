@@ -1,0 +1,99 @@
+macro_micro:
+  title: Macro and micro
+  why: >
+    Extreme close range, where depth of field is razor thin and the subject
+    stops being recognisable as an object. Also the best content for judging
+    whether a hi-res pass adds real detail or invents it.
+  intent: photoreal
+  rich:
+    shot: extreme_close_up
+    lens: macro_lens
+    focus: tack_sharp
+    lighting: softbox
+    detail: intricate
+    rule: centered
+  subcases:
+    insect_macro:
+      title: Insect macro
+      why: >
+        The same subject as the insect sub-case at a framing that removes the
+        body count problem. If macro succeeds where insect fails, the fault
+        was the framing, not the animal.
+      prompts:
+        - subject: a jumping spider's face, all eyes in focus
+        - subject: a butterfly wing showing individual scales
+        - subject: a bee's compound eye and antenna
+
+    crystal:
+      title: Crystals and minerals
+      why: Internal refraction and flat cleaved faces.
+      rich: {lighting: backlit, palette: jewel_tones}
+      prompts:
+        - subject: a cluster of amethyst points in a geode
+        - subject: a snowflake on dark wool
+          rich: {palette: ice_blue}
+        - subject: pyrite cubes embedded in shale
+
+    textile_macro:
+      title: Textile macro
+      why: Regular weave at a scale where every thread should be countable.
+      rich: {lighting: split_light}
+      prompts:
+        - subject: the weave of raw denim at thread level
+        - subject: velvet pile catching light from one side
+        - subject: a frayed rope end, fibres separating
+
+    droplet:
+      title: Droplets
+      why: >
+        A lens within the image. What a droplet refracts should match the
+        scene behind it, and often does not.
+      rich: {lighting: backlit, focus: tack_sharp}
+      prompts:
+        - subject: dew drops along a spider web strand
+        - subject: a water droplet on a leaf refracting the view behind it
+        - subject: rain beading on a waxed car bonnet
+
+diagram_map:
+  title: Diagrams and maps
+  why: >
+    Images whose whole purpose is to carry information correctly. Diffusion
+    cannot, and the honest result of this family is expected to be a clear
+    failure that argues for the compose.py overlay path instead. It is here
+    so that conclusion rests on evidence.
+  intent: graphic
+  rich:
+    rule: centered
+    detail: moderate
+    contrast: high
+    lighting: high_key
+  subcases:
+    map:
+      title: Maps
+      why: Coastlines, place names and a legend, none of which will be right.
+      rich: {medium: vector_flat, palette: earth_tones}
+      prompts:
+        - subject: a stylised map of an imaginary island with a compass rose
+        - subject: a transit map of coloured lines and interchange stations
+          rich: {palette: candy}
+        - subject: an old nautical chart with depth soundings
+          rich: {medium: engraving, palette: sepia}
+
+    technical_diagram:
+      title: Technical diagrams
+      why: Callout lines and labels, the structure most likely to become nonsense.
+      rich: {medium: blueprint, palette: ice_blue}
+      prompts:
+        - subject: an exploded view of a bicycle hub with callout lines
+        - subject: a cutaway diagram of a four-stroke engine
+        - subject: a patent drawing of a folding chair
+          rich: {medium: ink_linework, palette: high_contrast_bw}
+
+    infographic:
+      title: Infographics
+      why: Charts and numbers, where the model's output is decorative at best.
+      rich: {medium: vector_flat, palette: candy}
+      prompts:
+        - subject: a bar chart infographic with four labelled bars
+        - subject: a circular process diagram with five numbered stages
+        - subject: a timeline infographic running left to right

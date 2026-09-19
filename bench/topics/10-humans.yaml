@@ -1,0 +1,119 @@
+humans:
+  title: People
+  why: >
+    Faces, hands and bodies carry most of SDXL's visible failures, and they
+    are the reason the refiner exists. A model can be excellent at landscape
+    and unusable here.
+  intent: photoreal
+  rich:
+    shot: medium
+    lens: 85mm
+    lighting: softbox
+    focus: shallow_dof
+    angle: eye_level
+  subcases:
+    portrait:
+      title: Close portrait
+      why: Skin texture, eye symmetry, catchlights. The easiest human case.
+      rich: {shot: close_up, lens: 85mm, lighting: rembrandt, focus: shallow_dof}
+      prompts:
+        - subject: a weathered fisherman in his sixties, salt-crusted beard
+          setting: on the deck of a trawler at first light
+        - subject: a young woman with vitiligo, close portrait, direct gaze
+          setting: against a plain grey studio backdrop
+        - subject: a bald man laughing, deep laugh lines, eyes closed
+          setting: in a warm kitchen
+
+    hands:
+      title: Hands
+      why: >
+        The classic failure. Counting fingers is objective, so this is the
+        one human sub-case that scores itself.
+      rich: {shot: tight, lens: macro_lens, lighting: softbox, focus: tack_sharp}
+      prompts:
+        - subject: a pair of hands kneading bread dough
+          details: [flour on the knuckles, ten fingers clearly visible]
+        - subject: a hand holding a fountain pen, writing
+          details: [pen held in a normal tripod grip]
+        - subject: two hands clasped together, fingers interlaced
+          details: [both hands complete, no extra fingers]
+
+    full_body:
+      title: Full body
+      why: Limb count and proportion over a whole figure, where crops hide nothing.
+      rich: {shot: full_body, lens: 50mm, lighting: golden_hour, focus: deep_focus}
+      prompts:
+        - subject: a ballet dancer standing in fourth position
+          setting: an empty rehearsal studio with a barre
+        - subject: a hiker with a heavy pack, standing on a ridge
+          setting: a high alpine ridge, valley below
+        - subject: a blacksmith in a leather apron, hammer at his side
+          setting: the doorway of a forge
+
+    crowd:
+      title: Crowds
+      why: >
+        Many faces at small scale. SDXL tends to smear them; this is also
+        where duplicate-face artefacts show.
+      rich: {shot: wide, lens: 35mm, lighting: overcast, focus: deep_focus}
+      prompts:
+        - subject: a packed train platform at rush hour
+          details: [dozens of distinct commuters]
+        - subject: an outdoor market crowd seen from above
+          setting: a narrow street of stalls
+        - subject: a football terrace mid-chant
+          details: [scarves raised]
+
+    child:
+      title: Children
+      why: >
+        Child proportions are a known weakness: models drift toward
+        miniature adults, and toward uncanny faces.
+      rich: {shot: medium, lens: 85mm, lighting: golden_hour, focus: shallow_dof}
+      prompts:
+        - subject: a six-year-old girl blowing a dandelion clock
+          setting: a summer meadow
+        - subject: a toddler in wellington boots jumping in a puddle
+          setting: a rainy pavement
+        - subject: two children building a sandcastle
+          setting: a wide flat beach at low tide
+          rich: {shot: group}
+
+    elderly:
+      title: Elderly faces
+      why: Skin detail at the opposite end from the model's training bias toward youth.
+      rich: {shot: close_up, lens: 85mm, lighting: split_light, focus: tack_sharp}
+      prompts:
+        - subject: a woman in her nineties, deeply lined face, silver hair
+          setting: by a window in soft daylight
+        - subject: an elderly man asleep in an armchair, glasses askew
+          setting: a cluttered sitting room
+        - subject: an old woman's hands resting on a walking stick
+          details: [prominent veins, thin skin]
+
+    expression:
+      title: Expression
+      why: >
+        Whether a named emotion actually reaches the face. Prompt adherence
+        on something you can judge at a glance.
+      rich: {shot: close_up, lens: 85mm, lighting: chiaroscuro, focus: shallow_dof}
+      prompts:
+        - subject: a man's face showing genuine surprise, eyebrows high, mouth open
+        - subject: a woman suppressing a smile, lips pressed, eyes crinkling
+        - subject: a teenager looking bored and unimpressed, one eyebrow raised
+
+    interaction:
+      title: Two people interacting
+      why: >
+        Two bodies in one frame is where limbs merge and faces duplicate.
+        Harder than one figure by more than a factor of two.
+      rich: {shot: tableau, lens: 50mm, lighting: practical_glow, focus: deep_focus}
+      prompts:
+        - subject: two chess players mid-game, one reaching for a piece
+          setting: a quiet club room
+        - subject: a barber shaving a customer with a straight razor
+          setting: an old-fashioned barbershop
+        - subject: a nurse taking an elderly patient's blood pressure
+          setting: a bright clinic room
+
+# -------------------------------------------------------------------------

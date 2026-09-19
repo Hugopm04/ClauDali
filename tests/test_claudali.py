@@ -1619,3 +1619,169 @@ def test_a_render_paused_between_stages_resumes_bit_for_bit(tmp_path, monkeypatc
     for index in (0, 1):
         assert np.array_equal(resumed[index], reference[index]), index
     assert any("refiner stage of variation 2 of 2 at step 1" in note for note in result.notes)
+
+
+# ---------------------------------------------------------------------------
+# Metering: what a render cost
+# ---------------------------------------------------------------------------
+
+
+def test_the_meter_separates_stages_steps_and_the_first_step():
+    """A stage total divided by its steps is not seconds-per-step.
+
+    The stage span includes the pipeline's own setup, and the first step here
+    has been twelve times the others after a CPU decode left the machine
+    paging. Both are why the meter records steps individually and reports the
+    first one on its own instead of averaging it in.
+    """
+    from claudali.engine.metering import Meter
+
+    meter = Meter(enabled=False)  # no sampler thread: this test measures nothing real
+    meter.start()
+    with meter.span("load", kind="base", model="sdxl-base"):
+        pass
+    meter.begin_steps()  # opens the clock; each step() then closes an interval
+    with meter.span("stage", stage="base", variation=0, steps=3):
+        for _ in range(3):
+            meter.step("base")
+    meter.stop()
+
+    timing = meter.timing()
+    assert timing["stages"]["base"]["runs"] == 1
+    assert timing["stages"]["base"]["steps"] == 3
+    assert timing["steps"]["base"]["count"] == 3
+    assert timing["steps"]["base"]["first_s"] == pytest.approx(
+        timing["steps"]["base"]["min_s"], abs=1.0
+    )
+    # s_per_step comes from the measured steps, never from dividing the stage.
+    assert timing["stages"]["base"]["s_per_step"] == pytest.approx(
+        timing["steps"]["base"]["mean_s"]
+    )
+    assert [span["name"] for span in timing["spans"]] == ["load", "stage"]
+    assert timing["spans"][0]["model"] == "sdxl-base"
+
+
+def test_a_span_is_recorded_even_when_its_block_raises():
+    """A pause is an exception, and the work done before it still happened."""
+    from claudali.engine.metering import Meter
+
+    meter = Meter(enabled=False)
+    meter.start()
+    with contextlib.suppress(RuntimeError):
+        with meter.span("stage", stage="base"):
+            raise RuntimeError("paused")
+    meter.stop()
+    assert [span["name"] for span in meter.timing()["spans"]] == ["stage"]
+
+
+def test_a_render_reports_its_stages_decode_and_memory(monkeypatch, quality_models):
+    """render() fills timing and memory, with one stage span per stage per variation."""
+    pytest.importorskip("torch")
+    import dataclasses
+
+    from claudali.engine import render as engine
+
+    base, refiner = _tiny_loaded("base", 0), _tiny_loaded("refiner", 1)
+    call = _tiny_call()
+    embeds = {key: call[key] for key in call if key.endswith("embeds")}
+    monkeypatch.setattr(engine, "load_pipeline", lambda *args, **kwargs: base)
+    monkeypatch.setattr(engine, "load_refiner", lambda *args, **kwargs: refiner)
+    monkeypatch.setattr(engine, "_encode_prompts", lambda loaded, compiled: (dict(embeds), []))
+    monkeypatch.setattr(engine, "_encode_refiner_prompts", lambda loaded, compiled: (dict(embeds), []))
+    monkeypatch.setattr(engine, "_fingerprint", lambda *args, **kwargs: {"pipelines": "tiny"})
+    monkeypatch.setattr(engine, "device_report", lambda: {})
+    monkeypatch.setattr(engine, "resident", lambda: None)
+
+    spec = minimal(
+        render={"model": "sdxl-base", "seed": 11, "variations": 2, "steps": 4,
+                "sampler": "euler", "vae_decode": "gpu"},
+        refiner={"enabled": True, "handoff": 0.5},
+        hires={"enabled": True, "strength": 0.5},
+    )
+    compiled = compile_spec(spec)
+    compiled = dataclasses.replace(
+        compiled, width=32, height=32, hires={**compiled.hires, "width": 48, "height": 48}
+    )
+    result = engine.render(spec, compiled=compiled)
+
+    stages = result.timing["stages"]
+    assert set(stages) == {"base", "refiner", "hires"}
+    assert all(entry["runs"] == 2 for entry in stages.values()), "one span per variation"
+    names = [span["name"] for span in result.timing["spans"]]
+    # One load per phase, and with a refiner there are three: the base is
+    # released so the refiner fits, then loaded again for the hi-res passes.
+    assert [span["kind"] for span in result.timing["spans"] if span["name"] == "load"] == [
+        "base", "refiner", "base",
+    ]
+    # The hi-res pass decodes, upscales and encodes before it samples, and the
+    # last stage decodes again: five decodes for two variations.
+    assert names.count("upscale") == 2 and names.count("encode") == 2
+    assert names.count("decode") == 4
+    assert result.memory["ram_total_gb"] is not None
+    assert result.memory["ram_free_start_gb"] is not None
+
+
+def test_each_render_call_adds_one_timing_session_to_the_bundle(tmp_path):
+    """Two sessions' load times must not be added together into one render."""
+    from claudali.bundle import BundleWriter
+    from claudali.engine.render import RenderResult
+
+    spec = minimal()
+    compiled = compile_spec(spec)
+
+    def session(seconds):
+        return RenderResult(
+            images=[], compiled=compiled, duration_s=seconds,
+            timing={"total_s": seconds, "load_s": 40.0, "stages": {}, "steps": {}, "spans": []},
+            memory={"ram_free_start_gb": 11.2},
+        )
+
+    writer = BundleWriter.create(spec, compiled, "jobid", tmp_path / "bundle")
+    writer.complete(session(100.0))
+    bundle = BundleWriter.open(tmp_path / "bundle").complete(session(60.0))
+
+    assert len(bundle.sessions) == 2
+    assert [entry["duration_s"] for entry in bundle.sessions] == [100.0, 60.0]
+    assert bundle.duration_s == 160.0, "duration still accumulates"
+    assert bundle.timing["total_s"] == 60.0, "timing describes the latest session only"
+
+
+def test_regional_layers_are_not_reported_as_unused():
+    """Regional conditioning consumes layer geometry, so the ControlNet warning must not fire.
+
+    The warning exists because a layer stack with no control.mode is a wish.
+    But regional prompting turns each layer's bbox into an attention mask, so
+    the geometry does reach the render, and telling the caller otherwise sends
+    them to fix something that already works. init.mask_layer was already
+    exempt for the same reason; regional was not.
+    """
+    layers = [
+        {"role": "sky", "shape": "horizon", "bbox": [0.0, 0.0, 1.0, 0.5], "depth": 0.1,
+         "prompt": "a bank of storm cloud"},
+        {"role": "tower", "shape": "column", "bbox": [0.6, 0.2, 0.75, 0.8], "depth": 0.8,
+         "prompt": "a stone lighthouse"},
+    ]
+    unused = compile_spec(minimal(composition={"layers": layers}))
+    assert any("their geometry is not used" in warning for warning in unused.warnings)
+
+    regional = compile_spec(
+        minimal(composition={"layers": layers, "regional": {"enabled": True}})
+    )
+    assert not any("their geometry is not used" in warning for warning in regional.warnings)
+    assert any("masked cross-attention" in note for note in regional.notes)
+
+
+def test_a_possessive_subject_still_names_a_person():
+    """"a man's face" is as much a person as "a man".
+
+    The tokenizer strips punctuation from the edges of a word, which leaves an
+    internal apostrophe alone, so every possessive missed the person list: a
+    close-up of "an old woman's hands" was warned about as a body crop with no
+    body, and lost the anatomy negatives that case needs most.
+    """
+    for subject in ("a man's face, mid-laugh", "an old woman's hands on a walking stick"):
+        compiled = compile_spec(
+            minimal(subject={"primary": subject}, camera={"shot": "close_up"})
+        )
+        assert not any("crops a human body" in warning for warning in compiled.warnings), subject
+        assert "deformed hands" in compiled.negative_prompt, subject

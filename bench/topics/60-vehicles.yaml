@@ -1,0 +1,60 @@
+vehicles:
+  title: Vehicles
+  why: >
+    Hard-surface machines with strong symmetry expectations and badges the
+    model wants to invent. Wheels tend to become ellipses.
+  intent: photoreal
+  rich:
+    shot: wide
+    lens: 35mm
+    focus: deep_focus
+    lighting: overcast
+  subcases:
+    car:
+      title: Cars
+      why: Symmetry, reflective paint and wheel geometry in one object.
+      prompts:
+        - subject: a 1960s convertible parked on a coast road
+          rich: {lighting: golden_hour, palette: teal_amber}
+        - subject: a mud-covered rally car mid-corner on gravel
+          rich: {focus: motion_blur, shot: scene}
+        - subject: a rusting saloon abandoned in long grass
+
+    aircraft:
+      title: Aircraft
+      why: Wing and fuselage proportion, which drifts badly at odd angles.
+      prompts:
+        - subject: a propeller seaplane moored at a wooden jetty
+        - subject: an airliner on final approach, landing gear down
+          rich: {lens: 200mm, angle: low_angle}
+        - subject: a glider soaring above a ridge
+
+    boat:
+      title: Boats and ships
+      why: Hull shape against water, and rigging that tends to tangle.
+      prompts:
+        - subject: a wooden fishing boat hauled up on shingle
+        - subject: a tall ship under full sail in open sea
+          rich: {shot: extreme_wide, lighting: stormlight}
+        - subject: a narrowboat on a still canal at dawn
+
+    motorcycle:
+      title: Motorcycles
+      why: Dense exposed mechanism, harder than a car body.
+      rich: {shot: tableau, lens: 50mm, detail: intricate}
+      prompts:
+        - subject: a cafe racer motorcycle against a brick wall
+        - subject: a dirt bike mid-jump, dust trailing
+          rich: {focus: motion_blur}
+        - subject: the engine and exhaust of a vintage motorcycle, close
+
+    scifi_craft:
+      title: Science-fiction craft
+      why: Invented hard surface, where the model is freest and most confident.
+      intent: render3d
+      rich: {lighting: volumetric, movement: dieselpunk, detail: intricate}
+      prompts:
+        - subject: a heavy cargo hauler docking at an orbital ring
+        - subject: a small scout ship skimming a canyon
+          rich: {movement: cyberpunk, palette: neon_noir}
+        - subject: a derelict starship hull adrift, lights out

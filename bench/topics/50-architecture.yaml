@@ -1,0 +1,76 @@
+architecture:
+  title: Architecture
+  why: >
+    Straight lines, repetition and perspective. Windows drift out of alignment,
+    and structures that should be load-bearing stop making sense.
+  intent: photoreal
+  rich:
+    shot: wide
+    lens: 24mm
+    focus: deep_focus
+    angle: eye_level
+    rule: symmetry
+  subcases:
+    interior:
+      title: Interiors
+      why: Perspective convergence in an enclosed space, plus soft indirect light.
+      rich: {lighting: practical_glow, palette: earth_tones}
+      prompts:
+        - subject: a reading room lined with bookshelves and brass lamps
+        - subject: an empty concrete stairwell lit from above
+          rich: {lighting: god_rays, palette: desaturated}
+        - subject: a small cluttered workshop with tools on pegboard
+
+    exterior_modern:
+      title: Modern exteriors
+      why: Repeating glass panels, the clearest test of structural consistency.
+      rich: {lighting: harsh_noon, movement: minimalism}
+      prompts:
+        - subject: a glass office tower seen from the pavement
+          rich: {angle: low_angle, lens: 14mm}
+        - subject: a low concrete house among pines
+        - subject: a curved footbridge over a canal
+
+    historic:
+      title: Historic buildings
+      why: Ornament and carved detail at many scales at once.
+      rich: {lighting: golden_hour, movement: gothic, detail: intricate}
+      prompts:
+        - subject: the west front of a gothic cathedral
+        - subject: a timber-framed merchant house leaning over a lane
+        - subject: a cloister walk with repeating arches
+          rich: {rule: symmetry, lighting: god_rays}
+
+    futurist:
+      title: Futurist architecture
+      why: No reference photographs exist, so this is invention within a style.
+      intent: render3d
+      rich: {movement: solarpunk, lighting: volumetric, detail: intricate}
+      prompts:
+        - subject: a terraced arcology covered in hanging gardens
+        - subject: a transit hub of white curved shells
+        - subject: a dense neon-lit megacity street from above
+          rich: {movement: cyberpunk, palette: neon_noir, lighting: neon}
+
+    ruin:
+      title: Ruins
+      why: Controlled disorder, where the model can hide errors as damage.
+      rich: {lighting: overcast, palette: desaturated, detail: intricate}
+      prompts:
+        - subject: a roofless stone abbey overgrown with grass
+        - subject: an abandoned factory floor with a collapsed roof
+        - subject: a half-buried temple in jungle
+          rich: {palette: forest, lighting: god_rays}
+
+    urban_street:
+      title: Street scenes
+      why: >
+        Buildings, vehicles, people and signage together. The most crowded
+        composition in the survey, and the most ways to go wrong at once.
+      rich: {shot: scene, lens: 35mm, lighting: blue_hour}
+      prompts:
+        - subject: a narrow european street in the rain, cafe awnings
+        - subject: a wide boulevard at night, wet tarmac reflecting signs
+          rich: {lighting: neon, palette: neon_noir}
+        - subject: a quiet residential street on a summer afternoon
+          rich: {lighting: golden_hour}

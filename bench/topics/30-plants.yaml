@@ -1,0 +1,51 @@
+plants:
+  title: Plants
+  why: >
+    Repeating organic structure. Easy to make look plausible and hard to make
+    look correct: leaf arrangement and petal counts drift.
+  intent: photoreal
+  rich:
+    shot: tight
+    lens: macro_lens
+    lighting: overcast
+    focus: shallow_dof
+    palette: forest
+  subcases:
+    flower:
+      title: Flowers
+      why: Petal geometry and colour transitions.
+      prompts:
+        - subject: a single opened peony, petals layered
+        - subject: a field of sunflowers all facing the same way
+          rich: {shot: extreme_wide, lens: 35mm, focus: deep_focus}
+        - subject: a wild orchid on a mossy branch
+
+    tree:
+      title: Trees
+      why: Branch topology, which tends to fuse and loop where it should fork.
+      rich: {shot: wide, lens: 35mm, focus: deep_focus}
+      prompts:
+        - subject: a lone oak in an open field, bare winter branches
+        - subject: an ancient olive tree with a split, twisted trunk
+        - subject: a stand of redwoods seen from the forest floor
+          rich: {angle: low_angle, lighting: god_rays}
+
+    fungus:
+      title: Fungi
+      why: Gill structure and damp surfaces; a narrow, distinctive form.
+      prompts:
+        - subject: a cluster of fly agaric mushrooms on forest floor
+        - subject: bracket fungus growing from a fallen log
+        - subject: the underside of a mushroom cap, gills lit from below
+          rich: {shot: macro, lighting: backlit}
+
+    foliage:
+      title: Foliage and undergrowth
+      why: >
+        Dense repeating detail with no single subject. Where a render can be
+        beautiful and say nothing, and where the "shot" key misfires.
+      rich: {shot: scene, lens: 50mm, focus: deep_focus}
+      prompts:
+        - subject: dense fern undergrowth after rain
+        - subject: ivy covering a stone wall
+        - subject: a tangle of bramble and nettle at a field edge

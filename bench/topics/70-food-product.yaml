@@ -1,0 +1,102 @@
+food:
+  title: Food
+  why: >
+    Commercially over-represented in training data, so this is where the model
+    is most fluent and most generic. Watch for plausible food that is not the
+    dish that was asked for.
+  intent: photoreal
+  rich:
+    shot: tight
+    lens: 50mm
+    lighting: softbox
+    focus: shallow_dof
+    detail: high
+  subcases:
+    plated:
+      title: Plated dishes
+      why: Prompt adherence on a named dish, which is easy to check and often wrong.
+      prompts:
+        - subject: a bowl of ramen with a soft-boiled egg and nori
+          details: [broth visible, chopsticks resting across the rim]
+        - subject: a plate of paella with mussels and lemon wedges
+        - subject: a full english breakfast on a diner plate
+          rich: {lighting: harsh_noon, shot: scene}
+
+    raw_ingredient:
+      title: Raw ingredients
+      why: Surface texture without composition to hide behind.
+      rich: {shot: macro, lens: macro_lens, focus: tack_sharp}
+      prompts:
+        - subject: a halved pomegranate, seeds glistening
+        - subject: a wheel of blue cheese cut open
+        - subject: fresh sardines on crushed ice
+
+    baking:
+      title: Baking
+      why: Crumb structure and browning, a fine repeating texture.
+      prompts:
+        - subject: a torn open sourdough loaf showing an open crumb
+        - subject: a tray of croissants fresh from the oven
+        - subject: a lattice-topped cherry pie cooling on a rack
+
+    drink:
+      title: Drinks
+      why: Transparency, refraction and condensation in one object.
+      rich: {lighting: backlit, focus: tack_sharp}
+      prompts:
+        - subject: a glass of iced tea with condensation running down it
+        - subject: espresso being pulled into a clear glass cup
+        - subject: a pint of stout settling, cascading bubbles
+
+product:
+  title: Studio product
+  why: >
+    Clean backgrounds, controlled light, and the one category where a client
+    would notice a wrong reflection immediately. Also the category where
+    invented branding is most obvious.
+  intent: photoreal
+  rich:
+    shot: tableau
+    lens: 85mm
+    lighting: studio_three_point
+    focus: tack_sharp
+    rule: centered
+    contrast: normal
+  subcases:
+    electronics:
+      title: Electronics
+      why: Flat glass, brushed metal and precise edges.
+      prompts:
+        - subject: a pair of over-ear headphones on a seamless white background
+        - subject: a mechanical keyboard photographed at a low angle
+          rich: {angle: low_angle}
+        - subject: a compact film camera on a concrete surface
+
+    cosmetic:
+      title: Cosmetics
+      why: Glass, liquid and printed labels together.
+      rich: {lighting: high_key}
+      prompts:
+        - subject: a glass perfume bottle with a heavy faceted stopper
+        - subject: an open jar of face cream, spatula beside it
+        - subject: a row of lipsticks standing in a line
+
+    apparel:
+      title: Apparel
+      why: Fabric drape without a body inside it, which is harder than it sounds.
+      rich: {shot: scene, lighting: softbox}
+      prompts:
+        - subject: a wool overcoat on a wooden hanger against a plain wall
+        - subject: a pair of worn leather boots side by side
+        - subject: a folded stack of linen shirts
+
+    packaging:
+      title: Packaging
+      why: >
+        Boxes and labels invite the model to invent text. Whether it does, and
+        how badly, is the point.
+      rich: {lighting: high_key, rule: centered}
+      prompts:
+        - subject: a plain kraft cardboard box, closed, on white
+        - subject: a tin of loose leaf tea with a hinged lid
+        - subject: a glass jar of honey with a cloth cover tied at the neck

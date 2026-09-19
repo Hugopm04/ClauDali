@@ -1,0 +1,130 @@
+mechanical:
+  title: Mechanical detail
+  why: >
+    Dense functional structure where every part should connect to something.
+    This is the content the hi-res pass and the upscalers are meant to help,
+    so it is also the settings benchmark's macro scene.
+  intent: photoreal
+  rich:
+    shot: macro
+    lens: macro_lens
+    lighting: studio_three_point
+    focus: tack_sharp
+    detail: intricate
+  subcases:
+    watch_movement:
+      title: Watch movements
+      why: The densest legitimate detail available, and a fine test of an upscaler.
+      prompts:
+        - subject: the exposed movement of a mechanical wristwatch, jewels and gears
+        - subject: a watchmaker's tweezers lifting a balance wheel
+        - subject: the back of a skeleton pocket watch, engraved bridges
+
+    engine:
+      title: Engines
+      why: Large mechanism where parts must plausibly drive each other.
+      rich: {shot: tight, lens: 50mm, lighting: practical_glow}
+      prompts:
+        - subject: a stripped motorcycle engine on a workbench
+        - subject: the cylinder head of a vintage aero engine
+        - subject: a steam locomotive's connecting rods and driving wheels
+          rich: {shot: scene, lighting: overcast}
+
+    circuit_board:
+      title: Circuit boards
+      why: >
+        Repeating small components and silkscreen text. Reliably produces
+        invented lettering, which is worth measuring on its own.
+      prompts:
+        - subject: a green printed circuit board with surface-mount components
+        - subject: a vintage computer board with socketed chips and ribbon cable
+        - subject: a solder joint under magnification, iron tip approaching
+
+    tools:
+      title: Hand tools
+      why: Simple hard surfaces with a function the shape must fit.
+      rich: {shot: tight, lens: 50mm, lighting: softbox}
+      prompts:
+        - subject: a set of chisels laid out on a canvas roll
+        - subject: an adjustable spanner gripping a hex nut
+        - subject: a worn claw hammer on a workbench
+
+    robot:
+      title: Robots
+      why: Invented mechanism with an implied anatomy, between hard surface and figure.
+      intent: render3d
+      rich: {shot: scene, lens: 50mm, lighting: volumetric, detail: intricate}
+      prompts:
+        - subject: an industrial welding arm in a factory cell
+        - subject: a humanoid service robot standing in a lobby
+        - subject: a six-legged walking drone crossing rubble
+
+materials:
+  title: Materials
+  why: >
+    Surface behaviour in isolation: how light enters, scatters and leaves.
+    These are the cases where a VAE decode's precision is visible as texture
+    rather than as banding.
+  intent: photoreal
+  rich:
+    shot: macro
+    lens: macro_lens
+    focus: tack_sharp
+    lighting: softbox
+    detail: intricate
+  subcases:
+    glass:
+      title: Glass
+      why: Refraction and caustics, which need correct geometry behind them.
+      rich: {lighting: backlit}
+      prompts:
+        - subject: a stack of empty drinking glasses lit from behind
+        - subject: a cut crystal decanter throwing caustics on a table
+        - subject: broken safety glass held together by its film
+
+    water:
+      title: Water
+      why: Motion frozen mid-flow, the hardest fluid case.
+      rich: {focus: tack_sharp, lighting: hard_flash}
+      prompts:
+        - subject: a single drop striking a still water surface, crown forming
+        - subject: water pouring from a jug into a glass
+        - subject: a mountain stream over rocks, long exposure
+          rich: {focus: motion_blur, lighting: overcast}
+
+    metal:
+      title: Metal
+      why: Anisotropic reflection, which reveals whether the model understands the surface.
+      rich: {lighting: studio_three_point}
+      prompts:
+        - subject: a brushed stainless steel surface with a shallow scratch
+        - subject: hammered copper showing its facets
+        - subject: rusted iron flaking away from a bolt head
+
+    fabric:
+      title: Fabric
+      why: Weave at macro scale plus drape at larger scale.
+      prompts:
+        - subject: coarse linen weave under raking light
+          rich: {lighting: split_light}
+        - subject: crumpled black silk catching highlights
+        - subject: a knitted wool jumper, cable stitch detail
+
+    fur:
+      title: Fur and hair
+      why: >
+        Millions of fine strands. The clearest case where the tiled decode
+        loses detail the untiled one keeps.
+      prompts:
+        - subject: the ruff of a long-haired cat, individual strands visible
+        - subject: a braid of dark hair over a shoulder
+        - subject: sheep fleece still on the animal, close
+
+    stone:
+      title: Stone
+      why: Matte, irregular surfaces with no specular cue to lean on.
+      rich: {lighting: harsh_noon}
+      prompts:
+        - subject: weathered limestone with fossil impressions
+        - subject: a split granite boulder showing fresh crystal faces
+        - subject: a dry stone wall, each stone distinct

@@ -38,7 +38,7 @@ from ..config import SETTINGS
 from ..control.maps import build_control_image, build_region_masks, control_repo_for_mode
 from ..spec import SceneSpec
 from ..tokens import CHUNK_CONTENT_TOKENS
-from . import quiet, regional
+from . import metering, quiet, regional
 from .checkpoint import (
     STAGE_NAMES,
     RenderAborted,
@@ -122,6 +122,10 @@ class RenderResult:
     duration_s: float = 0.0
     task: str = "txt2img"
     device: dict[str, Any] = field(default_factory=dict)
+    # What this call cost, from engine/metering.py. Per session, not per image:
+    # a resume reports its own load and steps, never the paused run's as well.
+    timing: dict[str, Any] = field(default_factory=dict)
+    memory: dict[str, Any] = field(default_factory=dict)
 
 
 def _seeds_for(spec: SceneSpec) -> list[int]:
@@ -522,6 +526,15 @@ class _Run:
         self.started = started
         self.images: list[RenderedImage] = []
 
+        # Measured from here, before a single weight is loaded. The device
+        # report is taken now rather than at the end so its ``ram_available_gb``
+        # is the free memory the render *started* with -- the number that
+        # explains the decode path it chose, which a reading taken afterwards,
+        # with the model resident, cannot.
+        self.meter = metering.Meter()
+        self.meter.start()
+        self.device = device_report()
+
         # A step checkpoint applies once, to the stage and variation it was taken in.
         self.step_resume = resume.step if resume is not None else None
         self.resume_at = (resume.stage, resume.variation) if resume is not None else None
@@ -585,6 +598,9 @@ class _Run:
         )
 
     def result(self) -> RenderResult:
+        # Called on the way out of a pause and an abort as well as a finish, so
+        # the meter is stopped here rather than only at the end of run().
+        self.meter.stop()
         return RenderResult(
             images=list(self.images),
             compiled=self.compiled,
@@ -593,7 +609,9 @@ class _Run:
             notes=self.notes,
             duration_s=round(time.time() - self.started, 2),
             task=self.task,
-            device=device_report(),
+            device=self.device,
+            timing=self.meter.timing(),
+            memory=self.meter.memory(),
         )
 
     # -- the loop -----------------------------------------------------------
@@ -625,7 +643,8 @@ class _Run:
 
         if phase[0] == "refiner":
             assert self.compiled.refiner is not None
-            loaded = load_refiner(self.compiled.refiner["model"], self.compiled.precision)
+            with self.meter.span("load", kind="refiner", model=self.compiled.refiner["model"]):
+                loaded = load_refiner(self.compiled.refiner["model"], self.compiled.precision)
             encoder = _encode_refiner_prompts
         else:
             held = resident()
@@ -638,7 +657,8 @@ class _Run:
                     f"'{self.compiled.model}' was loaded in {held['precision']} for an earlier job, "
                     f"so it was reloaded in {self.compiled.precision}"
                 ])
-            loaded = load_pipeline(self.compiled.model, self.controlnet_id, self.compiled.precision)
+            with self.meter.span("load", kind="base", model=self.compiled.model):
+                loaded = load_pipeline(self.compiled.model, self.controlnet_id, self.compiled.precision)
             encoder = _encode_prompts
         self._say(self.warnings, loaded.warnings)
         self._say(self.notes, loaded.notes)
@@ -646,7 +666,8 @@ class _Run:
         self._say(self.warnings, apply_sampler(loaded, self.compiled.sampler))
         self.loaded = loaded
 
-        self.prompt_kwargs, encode_warnings = encoder(loaded, self.compiled)
+        with self.meter.span("prompt_encode", kind=phase[0]):
+            self.prompt_kwargs, encode_warnings = encoder(loaded, self.compiled)
         self._say(self.warnings, encode_warnings)
 
         if "base" in phase:
@@ -742,10 +763,16 @@ class _Run:
         if hires["upscaler"] == "realesrgan-x4":
             entry = registry.get("realesrgan-x4")
             model_path = entry.local_dir / (entry.single_file or "")
-        larger = upscale(image, hires["width"], hires["height"], hires["upscaler"], model_path)
+        with self.meter.span(
+            "upscale", upscaler=hires["upscaler"], width=hires["width"], height=hires["height"]
+        ):
+            larger = upscale(image, hires["width"], hires["height"], hires["upscaler"], model_path)
 
         plan = self._plan(hires["width"], hires["height"], "encode")
-        encoded, encode_warnings, encode_notes = encode(self.hires_pipe, larger, plan, self._cpu_vae)
+        with self.meter.span("encode", width=hires["width"], height=hires["height"]):
+            encoded, encode_warnings, encode_notes = encode(
+                self.hires_pipe, larger, plan, self._cpu_vae
+            )
         self._say(self.warnings, encode_warnings)
         self._say(self.notes, encode_notes)
         kwargs = {
@@ -793,6 +820,7 @@ class _Run:
         before = self.done
 
         def on_step(step: int) -> None:
+            self.meter.step(stage)
             if self.progress is None:
                 return
             self.progress(
@@ -810,7 +838,8 @@ class _Run:
 
         context = self._hires_context(pipe) if stage == "hires" else contextlib.nullcontext()
         try:
-            with context:
+            self.meter.begin_steps()
+            with self.meter.span("stage", stage=stage, variation=index, steps=count), context:
                 latents = denoise(
                     pipe, kwargs, self.seeds[index],
                     controller=self.controller, resume=step_resume, on_step=on_step,
@@ -851,7 +880,14 @@ class _Run:
 
     def _decode(self, pipe: Any, latents: Any, width: int, height: int) -> tuple[Image.Image, dict[str, Any]]:
         plan = self._plan(width, height, "decode")
-        image, record, decode_warnings, decode_notes = decode(pipe, latents, plan, self._cpu_vae)
+        with self.meter.span("decode", width=width, height=height) as detail:
+            image, record, decode_warnings, decode_notes = decode(pipe, latents, plan, self._cpu_vae)
+            # Which path it took is only known once it has taken it, and a
+            # decode time means nothing without it: CPU fp32 untiled and GPU
+            # fp16 tiled differ by more than the spread within either.
+            detail.update(
+                {key: record.get(key) for key in ("device", "precision", "tiled", "free_gb")}
+            )
         self._say(self.warnings, decode_warnings)
         self._say(self.notes, decode_notes)
         return image, record

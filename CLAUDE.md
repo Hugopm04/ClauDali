@@ -133,6 +133,8 @@ claudali/
                   decode and encode that follow it. Stdlib at import time.
     upscale.py    Lanczos, or Real-ESRGAN through spandrel (imported lazily),
                   before the hi-res pass.
+    metering.py   What a render cost: named spans, per-step times, and free
+                  RAM sampled on a background thread. Stdlib at import time.
     render.py     Runs each variation through its stages -- base, then the
                   optional refiner and hi-res pass -- batched by model.
                   denoise() runs one stage. Chooses txt2img / img2img / inpaint.
@@ -141,7 +143,8 @@ claudali/
   diagnostics.py  Measurements over a finished image. Reports, never enforces.
   compose.py      Post-diffusion: Pillow overlays and exact postprocessing.
   bundle.py       Writes the output bundle as the render goes (BundleWriter):
-                  images, previews, contact sheet, sidecar, diagnostics, status.
+                  images, previews, contact sheet, sidecar, diagnostics,
+                  status, and the timing and memory of every render session.
   jobs.py         Single-worker queue: progress, ETA, cancellation, pause with
                   or without holding the queue, resume at the front, and the
                   queue saved to runs/queue.json across a server restart.
@@ -154,6 +157,15 @@ installer/
   download.py     Resumable HTTP downloads with byte-level progress.
   core.py         Install stages: venv, torch, deps, models, verify.
   uninstall.py    Tiered removal with confirmation and reclaimed-space reporting.
+
+bench/            The benchmark. Its own README; see "Benchmarking" below.
+  topics/*.yaml   The topic survey's subject matter. Data, edit freely.
+  catalog.py      Builds the ordered item list for all four phases.
+  model.py        Item, the self-calibrating cost model, the run state.
+  runner.py       Spawns workers, follows them, keeps the books.
+  worker.py       Renders. The only module in bench/ that reaches torch.
+  progress.py     The whole-run progress bar and its ETA.
+  report.py       The HTML gallery and the CSV.
 ```
 
 **Import-cost rule:** importing `claudali.api`, `claudali.jobs` or
@@ -188,7 +200,8 @@ engine.render.render  ---> stages per variation: base [-> refiner] [-> hires]
 bundle.BundleWriter   ---> compose.finish (postprocess, then overlays), then
                            outputs/<stamp>_<slug>_<jobid>/ written as it goes:
                              images, previews, contact sheet, spec.json,
-                             result.json (status, diagnostics), checkpoint/
+                             result.json (status, diagnostics, timing, memory),
+                             checkpoint/
 ```
 
 The caller owns the disk: `jobs.py` and the CLI hand `BundleWriter` methods to
@@ -277,13 +290,18 @@ decisions, the silenced warnings, pause/resume (checkpoints, the queue, the
 bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU),
 and the quality options: the decode and offload plans, the max preset, and
 render() itself taking tiny base and refiner pipelines through all three stages,
-paused in the refiner and resumed. 103 tests, ~15 s. Importing diffusers for the
-tiny pipelines is most of it.
+paused in the refiner and resumed. It also covers the metering: spans, per-step
+times, and one timing session recorded per render call. 109 tests, ~15 s.
+Importing diffusers for the tiny pipelines is most of it.
 
 What needs the GPU and a person looking -- the web UI, decode quality, timings,
 the refiner, Real-ESRGAN, fp32 -- is a checklist in `tests/manual/README.md`,
 with its specs beside it. They are deliberately not in `examples/`: several
 warn by design, and every example must compile without warnings.
+
+For the systematic version of the same thing -- every option measured, and every
+kind of subject rendered on every checkpoint -- see `bench/` and the section
+below.
 
 ```bash
 .venv\Scripts\python -m pytest -q            # or: pip install pytest
@@ -499,6 +517,28 @@ are all non-destructive and safe to run any time.
 - **Decimal vs binary bytes.** `human_bytes` uses decimal (÷1000) so the
   installer's "7.1 GB" matches the catalogue's "7.14 GB". Two numbers for one
   file makes users distrust the tool.
+- **A render's timings are per session; its duration is not.** `duration_s`
+  accumulates across a pause and a resume, because the question it answers is
+  "how much GPU time did this image cost". `timing` and `memory` describe only
+  the most recent session, and `sessions` keeps them all, because adding two
+  sessions' load times together would describe a render that never happened:
+  each resume reloads the model and re-measures its own first step. When a
+  benchmark number looks wrong, check `len(sessions)` before anything else.
+- **Peak VRAM can exceed the card.** `memory.vram_peak_reserved_gb` comes from
+  torch's own counter, and on Windows WDDM an allocation that does not fit in
+  the 6 GB spills into shared system memory rather than failing. Measured while
+  building the benchmark: a 640×640 ControlNet render reported 12.35 GB
+  reserved and ran at 49 s/step, against 5.88 GB and 11.7 s/step for the same
+  size without ControlNet. A figure above ~6 GB is not a bad reading, it is the
+  explanation for a slow render.
+- **Free RAM at the start is the number that explains a decode.** `device_report()`
+  used to be called at the *end* of a render, so the `ram_available_gb` in every
+  bundle written before this was the memory left once the model was resident --
+  which cannot explain the decode path `auto` chose on the way in. It is taken
+  before the first weight loads now, and `memory.ram_free_min_gb` comes from a
+  background thread sampling every two seconds, because the trough falls between
+  the decode plan's own reading and the end of the render.
+
 - **`horizon` is a y coordinate, not a proportion of sky.** 0 is the top edge.
   A horizon near the *bottom* means the sky dominates. This was inverted in the
   first draft of the compiler.
@@ -538,6 +578,55 @@ Do not add these without a reason that survives the argument against them:
   visibly wrong for anything structured. `post.transparent_bg` is a corner
   flood-fill, not segmentation. Both are documented as such; neither should be
   quietly upgraded to something with a model dependency.
+
+## Benchmarking
+
+`bench/` is a second, systematic answer to the same question `tests/manual/`
+asks by hand. It has its own `bench/README.md`; read that before running it.
+Two experiments in one ordered list of 1,816 items:
+
+* **settings** holds the picture still on three fixed scenes and varies the
+  options, to measure what each one costs and buys;
+* **survey** holds the options still and varies the picture across 18 families,
+  90 sub-cases and 270 prompts on all three checkpoints, to find out what the
+  models are good at.
+
+Plus a **features** phase that smoke-tests every path never run on this GPU
+(ControlNet, regional prompting, init, inpainting, the post-processing), and an
+**accuracy** battery of prompts that score themselves -- counting, spatial
+relations, colour binding, negation and text.
+
+```powershell
+.\.venv\Scripts\python.exe -m bench plan --check   # build the list; validate every spec
+.\.venv\Scripts\python.exe -m bench run            # start, or carry on. Ctrl+C stops
+.\.venv\Scripts\python.exe -m bench status
+.\.venv\Scripts\python.exe -m bench report
+```
+
+Three things about it are load-bearing and easy to break:
+
+1. **The phase order is an argument, not a preference.** Features first because
+   they are cheap and they are what fails. Settings before the survey because
+   what settings finds decides the options the survey then holds still, and the
+   survey is 1,460 hours -- running it first risks all of that on a decode path
+   the benchmark then shows was wrong.
+2. **The survey's twelve waves make stopping safe.** Each wave is a complete
+   result: w01 is a family-level survey, w01+w02 adds the minimal-spec control,
+   w01..w04 makes sub-case verdicts defensible, and w05 onward repeat the lot on
+   the next checkpoint. Reordering them breaks the property that every prefix of
+   the list is worth something.
+3. **`vae_decode` is pinned everywhere except the axis that tests it.** With
+   `auto`, two items rendered on different evenings are not comparable, because
+   `auto` reads free RAM at that moment and may silently pick the better
+   decoder for one of them. Measured while building this: at 640x640 with
+   8.45 GB free, `auto` chose the CPU, drove free RAM to 0.0 GB and took 686 s
+   where the GPU tiled path took 100 s.
+
+`bench plan --check` compiles all 1,816 specs before writing the list. Run it
+after editing `bench/topics/*.yaml`: an unknown vocabulary key does not fail, it
+passes through as free text with a warning, which would quietly turn a style
+test into a text test. Twelve warnings are expected, all the refiner saying it
+may wash out Juggernaut's look.
 
 ## Commands
 

@@ -322,7 +322,13 @@ def _order(fragments: list[Fragment]) -> list[Fragment]:
 
 
 def _subject_words(spec: SceneSpec) -> set[str]:
-    """Every lowercased word the caller used to describe the subject."""
+    """Every lowercased word the caller used to describe the subject.
+
+    A possessive is folded to its stem, so "a man's face" and "an old woman's
+    hands" find `man` and `woman` in the word lists. This is normalisation, not
+    the kind of suffix inference the lists warn against: "man's" and "man" are
+    the same word, so it can produce no match that "man" would not.
+    """
     source = " ".join(
         [
             spec.subject.primary,
@@ -331,7 +337,8 @@ def _subject_words(spec: SceneSpec) -> set[str]:
             *spec.subject.secondary,
         ]
     ).lower()
-    return {word.strip(".,;:!?()'\"-") for word in source.split()} - {""}
+    words = {word.strip(".,;:!?()'\"-") for word in source.split()} - {""}
+    return words | {word[:-2] for word in words if word.endswith("'s") and len(word) > 3}
 
 
 def _names_a_person(spec: SceneSpec, vocab: dict[str, Any]) -> bool:
@@ -746,16 +753,21 @@ def compile_spec(spec: SceneSpec) -> CompiledPrompt:
         for layer in described:
             builder.add_text("layer", f"{layer.prompt}, {describe_position(layer)}")
 
-    # init.mask_layer is the other consumer of layer geometry: the named layer's
-    # bbox becomes the inpainting mask, so the layers are not unused there.
+    # A ControlNet map is not the only route layer geometry can take into a
+    # render, and warning that it was ignored when it was not would send the
+    # caller to fix something that is already working.
+    #   init.mask_layer  -- the named layer's bbox becomes the inpainting mask.
+    #   regional.enabled -- every layer's bbox becomes an attention mask.
+    # Both consume the geometry itself, not just the layer prompts.
     masking = spec.init is not None and spec.init.mask_layer is not None
-    if spec.composition.layers and spec.control.mode == "none" and not masking:
+    consumed = masking or regional.enabled
+    if spec.composition.layers and spec.control.mode == "none" and not consumed:
         # Geometry still only reaches the render through a ControlNet map, so a
         # carefully placed stack is still a wish without one. Saying so is the
         # rule; what changed is that the prompts are no longer lost with it.
         honoured = (
             f" The {len(described)} layer prompts were compiled as positional text instead."
-            if described and not regional.enabled
+            if described
             else ""
         )
         builder.warnings.append(

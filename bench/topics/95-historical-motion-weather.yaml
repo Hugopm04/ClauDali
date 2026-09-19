@@ -1,0 +1,153 @@
+historical:
+  title: Historical scenes
+  why: >
+    Period accuracy is a form of prompt adherence the model fails quietly:
+    the image looks right and the century is wrong. Anachronism is the thing
+    to look for, not quality.
+  intent: photoreal
+  rich:
+    shot: tableau
+    lens: 35mm
+    focus: deep_focus
+    detail: high
+  subcases:
+    ancient:
+      title: Ancient world
+      why: Furthest from photographic reference, so most reliant on painted priors.
+      intent: painterly
+      rich: {medium: oil_classical, lens: null, focus: null, lighting: harsh_noon, palette: desert}
+      prompts:
+        - subject: stonemasons raising a column on a temple site
+        - subject: a scribe working at a low desk with papyrus
+        - subject: a loaded merchant galley leaving harbour
+
+    medieval:
+      title: Medieval
+      why: Heavily stylised in training data, so expect fantasy bleed.
+      rich: {medium: oil_classical, lens: null, focus: null, lighting: overcast, palette: earth_tones}
+      prompts:
+        - subject: a village blacksmith working at an open forge
+        - subject: monks copying manuscripts in a scriptorium
+          rich: {lighting: candlelight}
+        - subject: a market day outside a walled town
+
+    victorian:
+      title: Victorian
+      why: Early photography exists for this period, so a different prior applies.
+      rich: {medium: film_35mm, lighting: overcast, palette: sepia, contrast: low}
+      prompts:
+        - subject: a steam locomotive at a covered platform
+        - subject: a family portrait in a parlour, everyone stiff and formal
+        - subject: a foggy street of gas lamps and hansom cabs
+          rich: {lighting: low_key, palette: desaturated}
+
+    mid_century:
+      title: Mid-century
+      why: Colour photography and strong design language; the easiest period.
+      rich: {medium: film_35mm, lighting: harsh_noon, palette: teal_amber, movement: art_deco}
+      prompts:
+        - subject: a 1950s american diner interior with chrome stools
+        - subject: an office of typewriters and filing cabinets
+        - subject: a family loading a station wagon for a holiday
+
+sport_motion:
+  title: Sport and motion
+  why: >
+    Bodies in dynamic poses, where anatomy fails that a standing figure hides,
+    plus motion blur as a deliberate effect rather than a defect.
+  intent: photoreal
+  rich:
+    shot: medium
+    lens: 200mm
+    focus: motion_blur
+    lighting: harsh_noon
+  subcases:
+    running:
+      title: Running
+      why: Mid-stride limb positions, a pose the model often gets impossible.
+      prompts:
+        - subject: a sprinter driving out of the blocks
+        - subject: a fell runner descending a steep grass slope
+        - subject: a marathon pack running through a city street
+          rich: {shot: wide, lens: 35mm}
+
+    water_sport:
+      title: Water sport
+      why: A body plus water spray, two hard things interacting.
+      rich: {focus: tack_sharp, lighting: golden_hour}
+      prompts:
+        - subject: a surfer inside a breaking wave
+        - subject: a swimmer mid-stroke, water streaming off the arm
+        - subject: eight rowers driving a racing shell at full pressure
+          rich: {shot: group}
+
+    cycling:
+      title: Cycling
+      why: Machine and rider together, with spoke geometry to get wrong.
+      prompts:
+        - subject: a track cyclist leaning into a banked turn
+        - subject: a mountain biker dropping off a rock step
+        - subject: a peloton stretched out on a mountain road
+          rich: {shot: extreme_wide, lens: 135mm, focus: deep_focus}
+
+    combat:
+      title: Combat sport
+      why: Two bodies contacting, the worst case for limb fusion.
+      rich: {shot: group, lighting: low_key, focus: tack_sharp}
+      prompts:
+        - subject: two boxers in a clinch, referee stepping in
+        - subject: a judo throw at the moment of commitment
+        - subject: two fencers mid-lunge, blades crossed
+
+weather_atmos:
+  title: Weather and atmosphere
+  why: >
+    Volumetric effects with no hard edges. Where the model is most likely to
+    produce something beautiful and least likely to produce something specific.
+  intent: photoreal
+  rich:
+    shot: extreme_wide
+    lens: 24mm
+    focus: deep_focus
+    aspect: "16:9"
+    horizon: 0.7
+  subcases:
+    storm:
+      title: Storms
+      why: High dynamic range and structure in cloud.
+      rich: {lighting: stormlight, palette: desaturated, contrast: high}
+      prompts:
+        - subject: a supercell over flat farmland
+        - subject: lightning striking a ridge at night
+          rich: {lighting: moonlight}
+        - subject: rain sweeping across a bay
+
+    fog:
+      title: Fog
+      why: Low contrast and depth cues carried entirely by aerial perspective.
+      rich: {lighting: overcast, palette: desaturated, contrast: low}
+      prompts:
+        - subject: a row of trees fading into thick fog
+        - subject: a harbour wall disappearing into sea mist
+        - subject: headlights approaching through dense fog
+          rich: {lighting: practical_glow, horizon: 0.55}
+
+    snow:
+      title: Falling snow
+      why: Many small bright particles against a dark field.
+      rich: {lighting: practical_glow, palette: ice_blue}
+      prompts:
+        - subject: heavy snow falling through a streetlight's cone
+        - subject: a woodland in a quiet snowfall
+          rich: {lighting: overcast}
+        - subject: a blizzard across an open moor
+
+    aurora:
+      title: Aurora and night sky
+      why: Emissive colour over a dark landscape, a strong stylistic prior.
+      rich: {lighting: moonlight, palette: jewel_tones, contrast: high}
+      prompts:
+        - subject: green aurora curtains over a fjord
+        - subject: the night sky reflected in a still lake
+        - subject: noctilucent clouds after sunset
+          rich: {lighting: blue_hour, palette: ice_blue}

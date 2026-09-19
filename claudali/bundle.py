@@ -83,6 +83,14 @@ class Bundle:
     duration_s: float = 0.0
     task: str = "txt2img"
     device: dict[str, Any] = field(default_factory=dict)
+    # What the render cost, from engine/metering.py. ``timing`` and ``memory``
+    # describe the most recent session; ``sessions`` keeps every one of them.
+    # They are deliberately not summed the way ``duration_s`` is: each session
+    # reloads the model and re-measures its first step, so adding two sessions'
+    # load times together would describe a render that never happened.
+    timing: dict[str, Any] = field(default_factory=dict)
+    memory: dict[str, Any] = field(default_factory=dict)
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     # Bundles written before pausing existed carry no status and were complete.
     status: str = "done"
@@ -338,6 +346,17 @@ class BundleWriter:
         self.bundle.duration_s = round(self._earlier_duration + result.duration_s, 2)
         self.bundle.task = result.task
         self.bundle.device = result.device
+        if result.timing or result.memory:
+            self.bundle.timing = result.timing
+            self.bundle.memory = result.memory
+            self.bundle.sessions.append(
+                {
+                    "at": _now(),
+                    "duration_s": result.duration_s,
+                    "timing": result.timing,
+                    "memory": result.memory,
+                }
+            )
 
     def _write_contact_sheet(self) -> None:
         images: list[tuple[int, int, Image.Image]] = []

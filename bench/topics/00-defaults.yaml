@@ -1,0 +1,49 @@
+# The topic survey's subject matter.
+#
+# This file answers "what is SDXL actually good at", and it is the only place
+# the answer's shape is decided. Everything else in bench/ is machinery.
+#
+# STRUCTURE
+#
+#   families    18 of them. A family is the level at which a verdict is cheap:
+#               five-odd prompts spread across its sub-cases, so no single
+#               prompt decides it.
+#   subcases    90 of them. A sub-case is the level at which a verdict is
+#               expensive: it needs three prompts of its own before "weak at
+#               reptiles" is a finding rather than a hunch.
+#   prompts     three per sub-case, 270 in all. They are deliberately unalike
+#               within a sub-case -- different settings, framing and difficulty
+#               -- because three rewordings of one idea measure nothing.
+#
+# Each prompt is rendered twice: once as a `rich` spec, with the family's and
+# sub-case's style, camera and lighting keys applied, and once as a `minimal`
+# spec that is nothing but the subject line and the intent. Comparing the two
+# is how you find out whether the vocabulary earned its keep, and it is also
+# the control that stops a weak rich result being blamed on the topic when the
+# style key was at fault.
+#
+# WHAT `why` IS FOR
+#
+# Every family and sub-case says what it is testing for. When you look at the
+# contact sheet, that sentence is the question you are answering. Without it a
+# survey this size turns into a thousand images and no verdict.
+#
+# EDITING
+#
+# Add a prompt and the item list grows by six jobs (rich + minimal, three
+# models). Ids are built from family/subcase/index, so inserting a prompt in
+# the middle renumbers everything after it and orphans the state of the items
+# that shift. Append to the end of a `prompts` list instead.
+#
+# Vocabulary keys must exist in claudali/vocabulary/*.yaml. Unknown keys pass
+# through as free text with a warning, which is fine for a person typing a
+# prompt and bad here: it would silently turn a style test into a text test.
+# `bench plan --check` validates every key against the vocabulary and refuses
+# to write a list with an unknown one.
+
+defaults:
+  aspect: "1:1"
+  detail: high
+  variations: 4
+  seed: 20260919
+

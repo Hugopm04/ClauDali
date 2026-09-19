@@ -309,7 +309,7 @@ misjudged**, no code change needed.
 
 | List | Entries | Used for |
 |---|---|---|
-| `person_words` | 110 | has a face and hands, fantasy humanoids included |
+| `person_words` | 132 | has a face and hands, fantasy humanoids included |
 | `person_suffixes` | 5 | matched as suffixes, for the occupation tail |
 | `plural_words` | 13 | means more than one, so one body cannot frame it |
 

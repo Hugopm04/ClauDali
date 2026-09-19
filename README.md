@@ -301,6 +301,14 @@ flags for known failure modes. Each image also records where its VAE decode ran
 and the free RAM that decided it. That is what makes "which of these four is best,
 and what should change" answerable without opening a single file.
 
+It also records what the render cost. `timing` breaks the total down by stage
+and by step — including seconds per step measured rather than divided out, and
+the first step of each stage on its own, because that is where paging shows up.
+`memory` gives free RAM at the start, at the end and at its lowest point,
+sampled on a background thread, plus peak VRAM. `sessions` keeps one entry per
+render call, so an image that was paused and resumed does not look like one
+that took two model loads to produce.
+
 ---
 
 ## Performance, honestly
@@ -438,8 +446,13 @@ contract, the prompt compiler, the procedural control maps, compositing,
 postprocessing, diagnostics, the engine's device decisions, pause and resume,
 and the quality stages on tiny random pipelines. What only a real GPU and a
 person looking can check is written up as a checklist with its specs in
-[tests/manual/](tests/manual/README.md). Regenerate the vocabulary reference
-after editing any table under `claudali/vocabulary/`:
+[tests/manual/](tests/manual/README.md), and systematically as a benchmark in
+[bench/](bench/README.md) — every option measured on three fixed scenes, and 270
+prompts across 18 subject families rendered on all three checkpoints. It is
+resumable: Ctrl+C stops it, the same command carries on.
+
+Regenerate the vocabulary reference after editing any table under
+`claudali/vocabulary/`:
 
 ```bash
 python scripts/gen_vocab_docs.py
@@ -451,6 +464,7 @@ python scripts/gen_vocab_docs.py
 - [docs/api.md](docs/api.md) — endpoint reference
 - [docs/vocabulary.md](docs/vocabulary.md) — every vocabulary key
 - [docs/refine-loop.md](docs/refine-loop.md) — the render → judge → adjust workflow
+- [bench/README.md](bench/README.md) — the benchmark: what it measures, how to stop and resume it
 - [CLAUDE.md](CLAUDE.md) — architecture and conventions, for future Claude sessions
 
 ## Licence

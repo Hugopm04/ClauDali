@@ -1,0 +1,105 @@
+animals:
+  title: Animals
+  why: >
+    Anatomy the model has seen a great deal of (dogs, horses) next to anatomy
+    it has seen little of (insects at scale, amphibians). The gap between
+    sub-cases here is expected to be the largest in the survey.
+  intent: photoreal
+  rich:
+    shot: scene
+    lens: 200mm
+    lighting: golden_hour
+    focus: shallow_dof
+    palette: earth_tones
+  subcases:
+    mammal:
+      title: Mammals
+      why: The best-represented animal class. If anything works, this does.
+      prompts:
+        - subject: a red fox stepping through deep snow
+          setting: a birch wood in winter
+        - subject: a bull elephant walking through dust
+          setting: a dry savannah at dusk
+        - subject: a housecat asleep on a windowsill
+          setting: a sunlit kitchen
+          rich: {shot: tight, lens: 50mm, lighting: backlit}
+
+    bird:
+      title: Birds
+      why: Feather structure and wing geometry, especially in flight.
+      prompts:
+        - subject: a barn owl in flight, wings fully spread
+          setting: over a dark meadow at dusk
+          rich: {focus: motion_blur}
+        - subject: a kingfisher perched on a reed
+          setting: above still water
+        - subject: a flock of starlings forming a murmuration
+          setting: an evening sky over marshland
+          rich: {shot: extreme_wide, lens: 135mm}
+
+    insect:
+      title: Insects
+      why: >
+        Six legs, segmented bodies, translucent wings. Frequently rendered
+        with the wrong number of limbs, and a known weak point.
+      rich: {shot: macro, lens: macro_lens, focus: tack_sharp, lighting: softbox}
+      prompts:
+        - subject: a dragonfly resting on a reed
+          details: [four separate wings, six legs]
+        - subject: a stag beetle on bark
+          details: [large mandibles, hard carapace]
+        - subject: a honeybee on a lavender flower
+          details: [pollen sacs on the hind legs]
+
+    fish:
+      title: Fish and sea life
+      why: Underwater light, scales, and bodies with no limbs to get wrong.
+      rich: {lighting: underwater_caustics, palette: ice_blue, focus: soft_focus}
+      prompts:
+        - subject: a school of sardines turning as one
+          setting: open blue water
+        - subject: a single koi carp near the surface of a pond
+          setting: a garden pond with lily pads
+        - subject: an octopus changing colour against a rock
+          setting: a shallow reef
+
+    reptile:
+      title: Reptiles
+      why: Scale patterning and cold-blooded surfaces; far less training data than mammals.
+      rich: {shot: tight, lens: macro_lens, focus: tack_sharp, lighting: harsh_noon}
+      prompts:
+        - subject: a green iguana basking on a warm rock
+          details: [dewlap and dorsal spines]
+        - subject: a chameleon gripping a thin branch
+          details: [independently swivelling eyes, zygodactyl feet]
+        - subject: a saltwater crocodile half-submerged, eyes above the waterline
+          setting: a muddy river
+
+    amphibian:
+      title: Amphibians
+      why: Wet skin, a material the model handles differently from fur or scale.
+      rich: {shot: macro, lens: macro_lens, focus: tack_sharp, lighting: bioluminescent}
+      prompts:
+        - subject: a red-eyed tree frog clinging to a leaf
+          details: [orange toe pads, wet skin]
+        - subject: a fire salamander on wet moss
+          details: [glossy black skin with yellow markings]
+        - subject: a common toad half-buried in leaf litter
+
+    mythical:
+      title: Mythical creatures
+      why: >
+        No photographic training data exists, so this measures how the model
+        composes an unseen body from parts it knows. The fairy failure in
+        CLAUDE.md came from exactly here.
+      intent: painterly
+      rich: {shot: scene, lens: null, focus: null, lighting: god_rays, movement: magic_realism}
+      prompts:
+        - subject: a griffon perched on a cliff edge, eagle head and lion body
+          setting: a windswept headland
+        - subject: a small dragon curled around a stone tower
+          setting: a mountain fortress at dusk
+        - subject: a centaur drawing a longbow
+          setting: a birch forest clearing
+
+# -------------------------------------------------------------------------

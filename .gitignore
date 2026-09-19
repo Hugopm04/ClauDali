@@ -30,3 +30,16 @@ desktop.ini
 
 # Installer log
 install.log
+
+# Benchmark output. The plan, the specs and the run state are all rebuilt by
+# `python -m bench plan`, and the images are gigabytes, so none of it belongs
+# in the repository. What defines the benchmark -- bench/topics/*.yaml and the
+# code -- is committed; what it produces is not.
+/bench/runs/
+/bench/specs/
+/bench/report/
+/bench/logs/
+/bench/assets/
+/bench/plan.json
+/bench/state.json
+/bench/calibration.json

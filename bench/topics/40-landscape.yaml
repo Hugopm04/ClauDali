@@ -1,0 +1,83 @@
+landscape:
+  title: Landscape
+  why: >
+    Large smooth gradients and no subject to anchor on. This is where VAE tile
+    seams and banding are visible, so it doubles as the decode-quality content
+    in the settings benchmark.
+  intent: photoreal
+  rich:
+    shot: extreme_wide
+    lens: 24mm
+    focus: deep_focus
+    aspect: "16:9"
+    rule: thirds
+    horizon: 0.62
+  subcases:
+    mountain:
+      title: Mountains
+      why: Aerial perspective and rock detail at distance.
+      rich: {lighting: golden_hour, palette: ice_blue}
+      prompts:
+        - subject: a granite peak above a glacier, first light on the summit
+        - subject: a chain of foothills receding into haze
+        - subject: a narrow mountain pass under heavy cloud
+          rich: {lighting: stormlight}
+
+    coast:
+      title: Coast and sea
+      why: Water surface, spray, and a horizon line that tends to tilt.
+      rich: {lighting: blue_hour, palette: teal_amber}
+      prompts:
+        - subject: basalt cliffs meeting a heavy grey sea
+        - subject: a long empty beach at low tide, wet sand reflecting the sky
+        - subject: waves breaking over a harbour wall in a gale
+          rich: {lighting: stormlight, focus: motion_blur}
+
+    forest:
+      title: Forest
+      why: The most-rendered landscape type, and a known trap for small subjects.
+      rich: {lighting: god_rays, palette: forest, shot: scene}
+      prompts:
+        - subject: an old-growth beech wood in autumn
+        - subject: a pine forest in thick fog
+          rich: {lighting: overcast, palette: desaturated}
+        - subject: a narrow path through dense summer woodland
+
+    desert:
+      title: Desert
+      why: Vast smooth dune gradients, the hardest surface for a tiled decode.
+      rich: {lighting: harsh_noon, palette: desert}
+      prompts:
+        - subject: sand dunes with wind-carved ridges
+        - subject: a dry salt flat cracked into polygons
+        - subject: a rock arch in red sandstone at sunset
+          rich: {lighting: golden_hour}
+
+    arctic:
+      title: Ice and snow
+      why: Near-white scenes, where highlight clipping and lost detail show.
+      rich: {lighting: overcast, palette: ice_blue, contrast: low}
+      prompts:
+        - subject: an iceberg calving into black water
+        - subject: a frozen lake surface with pressure cracks
+        - subject: a snowfield under low winter sun, long blue shadows
+          rich: {lighting: golden_hour}
+
+    wetland:
+      title: Wetland
+      why: Reflection and waterline, which is where geometry usually breaks.
+      rich: {lighting: blue_hour, palette: earth_tones}
+      prompts:
+        - subject: a still marsh at dawn with mist over the water
+        - subject: mangrove roots in shallow tidal water
+        - subject: a reed bed reflected in flat calm water
+
+    space:
+      title: Space and sky
+      why: Entirely synthetic subject matter with strong stylistic priors.
+      rich: {lighting: moonlight, palette: jewel_tones}
+      prompts:
+        - subject: the milky way over a dark desert horizon
+        - subject: a gas giant with visible banding and a thin ring
+        - subject: aurora over a snowfield
+          rich: {palette: ice_blue}
