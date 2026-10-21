@@ -2,6 +2,8 @@
 
 **Structured-prompt image generation over local SDXL.**
 
+> **How it was built.** I designed the architecture and wrote the specifications; the code was written by an AI coding agent (Claude Code) under my direction, and I reviewed and tested it.
+
 Claude can read images but cannot emit them. ClauDali is the infrastructure that
 closes that gap: you describe an image as a *structured scene spec* — subject,
 lighting, camera, palette, composition — and ClauDali compiles it into the
