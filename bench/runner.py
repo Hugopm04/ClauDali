@@ -51,6 +51,11 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _exit_code(code: int) -> str:
+    """A crash's exit code the way Windows writes it: 0xC0000005, not 3221225477."""
+    return f"0x{code:08X}" if code >= 0xC0000000 else str(code)
+
+
 @dataclass
 class Plan:
     """The items to run this session, and the whole-run totals to show against."""
@@ -194,6 +199,8 @@ class Runner:
         self.dry_run = dry_run
         self.interrupted = False
         self._power: Optional[str] = None
+        # The current worker's stderr, named when that worker dies without reporting.
+        self.log: Optional[Path] = None
 
     # -- one worker ---------------------------------------------------------
 
@@ -201,6 +208,7 @@ class Runner:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         log = LOGS_DIR / f"{stamp}_{batch[0].id.replace('/', '_')}.log"
+        self.log = log
         command = [sys.executable, "-m", "bench.worker", *[item.id for item in batch]]
         if self.force:
             command.append("--force")
@@ -370,6 +378,32 @@ class Runner:
             note += f"  flags: {', '.join(flags)}"
         self.bar.log(note)
 
+    def _record_crash(self, code: Optional[int], batch: list[Item], progress: RunProgress) -> None:
+        """Fail the item a worker was rendering when it died without reporting.
+
+        A native crash ends a worker between two events, so nothing says the
+        item is over, and it would sit in the state file as ``running`` while
+        the run moved on without a word. An exit code of 0 is not a crash: after
+        a second Ctrl+C the runner stops reading, and the bundle tells the next
+        session how that item ended.
+        """
+        if not code:
+            return
+        log = f"; see {self.log}" if self.log else ""
+        crashed = [
+            item for item in batch
+            if item.id in self.state.records and self.state.records[item.id].status == "running"
+        ]
+        for item in crashed:
+            record = self.state.records[item.id]
+            record.status = "failed"
+            record.finished_at = _now()
+            record.error = f"the worker died with exit code {_exit_code(code)} while rendering it{log}"
+            progress.failed_items += 1
+            self.bar.log(f"  FAILED {item.id}: {record.error}")
+        if not crashed:
+            self.bar.log(f"  the worker exited with code {_exit_code(code)}{log}")
+
     # -- the loop -----------------------------------------------------------
 
     def _check_power(self) -> None:
@@ -431,6 +465,7 @@ class Runner:
                 if process.stderr is not None:
                     process.stderr.close()
                 process.wait()
+            self._record_crash(process.returncode, batch, progress)
             self.state.save()
 
         self.bar.draw(progress, force=True)

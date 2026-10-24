@@ -1621,6 +1621,68 @@ def test_a_render_paused_between_stages_resumes_bit_for_bit(tmp_path, monkeypatc
     assert any("refiner stage of variation 2 of 2 at step 1" in note for note in result.notes)
 
 
+def test_deriving_a_pipeline_keeps_its_precision():
+    """The hi-res pass and ControlNet must not turn the loaded fp16 SDXL into fp32.
+
+    A pipeline made by from_pipe shares the loaded weights, and diffusers 0.40's
+    DiffusionPipeline.from_pipe casts what it builds to float32 unless told
+    otherwise -- in place, so the cached pipeline went with it. Every hi-res and
+    ControlNet render then ran a 10 GB UNet on a 6 GB card, at 137 s a step
+    instead of 23, until the benchmark ran Windows out of virtual memory.
+    AutoPipeline's img2img and inpainting never cast; they are here so that a
+    diffusers which starts to is caught as well.
+    """
+    torch = pytest.importorskip("torch")
+    diffusers = pytest.importorskip("diffusers")
+    from claudali.engine.pipelines import _from_pipe, derive_pipeline, hires_pipeline
+
+    def loaded_in_fp16():
+        loaded = _tiny_loaded("base", 0)
+        loaded.pipe.to(dtype=torch.float16)
+        return loaded
+
+    def dtypes(pipe):
+        return {module.dtype for module in pipe.components.values() if isinstance(module, torch.nn.Module)}
+
+    loaded = loaded_in_fp16()
+    hires_pipeline(loaded)
+    assert dtypes(loaded.pipe) == {torch.float16}, "the hi-res pass"
+
+    for task in ("img2img", "inpaint"):
+        loaded = loaded_in_fp16()
+        derive_pipeline(loaded, task)
+        assert dtypes(loaded.pipe) == {torch.float16}, task
+
+    # load_pipeline wraps the base the same way when a spec asks for ControlNet.
+    loaded = loaded_in_fp16()
+    controlnet = diffusers.ControlNetModel.from_unet(loaded.pipe.unet).to(dtype=torch.float16)
+    controlled = _from_pipe(diffusers.StableDiffusionXLControlNetPipeline, loaded.pipe, controlnet=controlnet)
+    assert dtypes(controlled) == {torch.float16}, "ControlNet"
+
+
+def test_a_from_pipe_that_still_casts_is_undone_and_refused():
+    """A diffusers that ignores the dtype fails loudly and leaves the cache as it was.
+
+    The weights are shared, so by the time the cast is noticed it has already
+    reached the resident pipeline. It is put back before raising, or the next
+    job would render in fp32 off the cache without a word.
+    """
+    torch = pytest.importorskip("torch")
+    from claudali.engine.pipelines import _from_pipe
+
+    loaded = _tiny_loaded("base", 0)
+    loaded.pipe.to(dtype=torch.float16)
+
+    class IgnoresTheDtype:
+        @staticmethod
+        def from_pipe(pipe, **_kwargs):
+            return pipe.to(dtype=torch.float32)  # what diffusers 0.40 does when given none
+
+    with pytest.raises(RuntimeError, match="ignores torch_dtype"):
+        _from_pipe(IgnoresTheDtype, loaded.pipe)
+    assert (loaded.pipe.unet.dtype, loaded.pipe.vae.dtype) == (torch.float16, torch.float16)
+
+
 # ---------------------------------------------------------------------------
 # Metering: what a render cost
 # ---------------------------------------------------------------------------

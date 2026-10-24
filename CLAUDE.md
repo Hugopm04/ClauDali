@@ -293,7 +293,7 @@ bundle writer, and an exact resume on a tiny random SDXL pipeline on the CPU),
 and the quality options: the decode and offload plans, the max preset, and
 render() itself taking tiny base and refiner pipelines through all three stages,
 paused in the refiner and resumed. It also covers the metering: spans, per-step
-times, and one timing session recorded per render call. 109 tests, ~15 s.
+times, and one timing session recorded per render call. 111 tests, ~15 s.
 Importing diffusers for the tiny pipelines is most of it.
 
 What needs the GPU and a person looking -- the web UI, decode quality, timings,
@@ -318,8 +318,9 @@ token estimator reading 31% low, an occupation such as "alchemist" not counting
 as a person, a resume that re-ran every step instead of continuing, a torch
 import creeping into the server modules, a saved spec whose written-out defaults
 beat its intent when loaded back, a sampler inheriting the previous one's Karras
-sigmas, `lms` needing a package nothing installs, and a staged resume re-running
-stages it had finished. Do not delete them to make a change pass.
+sigmas, `lms` needing a package nothing installs, a staged resume re-running
+stages it had finished, and a hi-res pass or ControlNet turning the loaded fp16
+pipeline into fp32. Do not delete them to make a change pass.
 
 For anything visual, **write the image out and look at it** rather than
 trusting an assertion about pixel statistics:
@@ -497,6 +498,20 @@ are all non-destructive and safe to run any time.
 - **`from_pipe` shares weights.** img2img and inpainting derive from the loaded
   txt2img pipeline at no extra disk, download or load cost. This is why SDXL base
   can inpaint without a dedicated inpainting checkpoint.
+- **`from_pipe` also casts, in place.** Since diffusers 0.40,
+  `DiffusionPipeline.from_pipe` casts the pipeline it builds to float32 unless
+  it is given a dtype, and because the weights are shared, the resident fp16
+  pipeline went to fp32 with it. The hi-res pass (`hires_pipeline`) and
+  ControlNet (`load_pipeline`) both took that path; img2img and inpainting go
+  through AutoPipeline, which never casts. Nothing errored. A 10 GB UNet ran
+  under model offload on a 6 GB card, spilled into shared memory and sampled at
+  137 s per step instead of 23. In the benchmark the 1536² hi-res items ran out
+  of memory, and a 1280² one ran Windows out of virtual memory until the
+  worker died in torch's `c10.dll`. `_from_pipe` passes `torch_dtype`, the name
+  every allowed diffusers accepts, and checks the result;
+  `test_deriving_a_pipeline_keeps_its_precision` locks all four paths. Every
+  ControlNet and hi-res timing taken before 2026-10-24 is an fp32 timing. The
+  ten benchmark items affected were deleted and re-queued that day.
 - **A saved spec holds only what was set.** `BundleWriter.create` and the queue
   save use `model_dump(exclude_unset=True)`, and `SceneSpec` unmarks the size it
   fills in from the aspect. A full dump writes `steps: 30` and `cfg: 6.5` out as
@@ -531,7 +546,8 @@ are all non-destructive and safe to run any time.
   the 6 GB spills into shared system memory rather than failing. Measured while
   building the benchmark: a 640×640 ControlNet render reported 12.35 GB
   reserved and ran at 49 s/step, against 5.88 GB and 11.7 s/step for the same
-  size without ControlNet. A figure above ~6 GB is not a bad reading, it is the
+  size without it. The spill was the fp32 cast under "`from_pipe` also casts"
+  above, not ControlNet. A figure above ~6 GB is not a bad reading, it is the
   explanation for a slow render.
 - **Free RAM at the start is the number that explains a decode.** `device_report()`
   used to be called at the *end* of a render, so the `ram_available_gb` in every
@@ -606,7 +622,7 @@ relations, colour binding, negation and text.
 .\.venv\Scripts\python.exe -m bench report
 ```
 
-Three things about it are load-bearing and easy to break:
+Five things about it are load-bearing and easy to break:
 
 1. **The phase order is an argument, not a preference.** Features first because
    they are cheap and they are what fails. Settings before the survey because
@@ -636,6 +652,15 @@ Three things about it are load-bearing and easy to break:
    schemes here are a mix of localised Windows ones and English ones Armoury
    Crate created, so any table of "bad" names would be wrong in the next
    language. Do not add one.
+5. **A crashed worker must exit, not wait.** On 2026-09-25 a worker died in
+   torch's `c10.dll` when Windows ran out of virtual memory, and the "python.exe
+   - Error de la aplicación" dialog kept the dead process alive, with the runner
+   waiting on it, for six hours until someone clicked OK. The worker now turns
+   that dialog off (`SetErrorMode`) and enables `faulthandler`, so it exits at
+   once with every thread's Python stack in its log under `bench/logs`. The
+   runner marks an item whose worker died without reporting as failed, with
+   the exit code. Without the second half a crash would be silent. A failed
+   item is tried again at the start of every later run.
 
 `bench plan --check` compiles all 1,816 specs before writing the list. Run it
 after editing `bench/topics/*.yaml`: an unknown vocabulary key does not fail, it

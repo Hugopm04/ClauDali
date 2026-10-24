@@ -469,12 +469,13 @@ def test_the_report_skips_items_that_have_not_run(tmp_path, plan):
 class _FakeProcess:
     """A worker that emits the given lines, optionally raising Ctrl+C partway."""
 
-    def __init__(self, lines, interrupt_after=None):
+    def __init__(self, lines, interrupt_after=None, returncode=0):
         self._lines = list(lines)
         self._interrupt_after = interrupt_after
         self.stderr = None
         self.waited = False
         self.killed = False
+        self.returncode = returncode
 
     @property
     def stdout(self):
@@ -581,6 +582,47 @@ def test_a_failed_item_does_not_stop_the_run(monkeypatch, tmp_path):
     assert "OutOfMemoryError" in state.records["settings/a"].error
     assert state.status("settings/b") == "done"
     assert progress.failed_items == 1 and progress.done_items == 1
+
+
+def test_a_worker_that_dies_mid_item_fails_it_and_the_run_goes_on(monkeypatch, tmp_path):
+    """A native crash reports nothing, so the exit code is all there is to go on.
+
+    On 2026-09-25 a worker died in torch's c10.dll when Windows ran out of
+    virtual memory. Its item stayed 'running' in the state file and nothing on
+    screen said why.
+    """
+    items = [_item("settings/a"), _item("settings/b")]
+    step = {"event": "step", "item": "settings/a", "stage": "base", "step": 1, "steps": 4,
+            "variation": 1, "variations": 1, "done": 1.0, "total": 4.0}
+    processes = [
+        _FakeProcess(_events("settings/a", step), returncode=0xC0000005),
+        _FakeProcess(_events("settings/b", {"event": "done", "item": "settings/b",
+                                            "images": 1, "duration_s": 12.0,
+                                            "timing": {}, "memory": {}})),
+    ]
+    state = State(path=tmp_path / "state.json")
+    monkeypatch.setattr(Calibration, "save", lambda self, path=None: None)
+    run = runner.Runner(state, Calibration(), ProgressBar(enabled=False))
+    monkeypatch.setattr(run, "_spawn", lambda batch: processes.pop(0))
+    plan = runner.Plan(all_items=items, outstanding=items,
+                       total_units=sum(i.work_units() for i in items), done_units=0.0)
+
+    progress = run.run(plan)
+
+    assert state.status("settings/a") == "failed"
+    assert "0xC0000005" in state.records["settings/a"].error
+    assert state.status("settings/b") == "done"
+    assert progress.failed_items == 1 and progress.done_items == 1
+
+
+def test_a_clean_exit_is_never_reported_as_a_crash(monkeypatch, tmp_path):
+    """After a second Ctrl+C the runner stops reading; the bundle says how the item ended."""
+    item = _item("settings/a")
+    run, state, plan = _runner_over(monkeypatch, tmp_path, _FakeProcess(_events(item.id)), [item])
+
+    run.run(plan)
+
+    assert state.status(item.id) == "running", "left for the next session's reconcile"
 
 
 def test_a_finished_item_advances_the_whole_run_bar(monkeypatch, tmp_path):

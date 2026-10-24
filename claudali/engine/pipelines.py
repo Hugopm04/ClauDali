@@ -776,7 +776,7 @@ def load_pipeline(
                 variant=_variant_for(control_entry.local_dir),
                 local_files_only=True,
             )
-            pipe = StableDiffusionXLControlNetPipeline.from_pipe(pipe, controlnet=controlnet)
+            pipe = _from_pipe(StableDiffusionXLControlNetPipeline, pipe, controlnet=controlnet)
 
         offload = _finish_load(pipe, precision, upcast_vae, warnings, notes)
         compel, compel_warnings = _build_compel(pipe, offload)
@@ -957,8 +957,38 @@ def hires_pipeline(loaded: LoadedPipeline) -> Any:
     """
     from diffusers import StableDiffusionXLImg2ImgPipeline
 
-    derived = StableDiffusionXLImg2ImgPipeline.from_pipe(loaded.pipe)
+    derived = _from_pipe(StableDiffusionXLImg2ImgPipeline, loaded.pipe)
     derived.set_progress_bar_config(disable=True)
+    return derived
+
+
+def _from_pipe(factory: Any, source: Any, **components: Any) -> Any:
+    """``factory.from_pipe(source)``, keeping the shared weights in the precision they were loaded in.
+
+    A pipeline made by ``from_pipe`` shares its modules with ``source``, and
+    ``DiffusionPipeline.from_pipe`` ends by casting the new pipeline: since
+    diffusers 0.40, to float32 unless it is given a dtype. The cast happens in
+    place, so building the hi-res pass, or wrapping the base in ControlNet,
+    turned the resident fp16 SDXL into fp32. Nothing failed. A 10 GB UNet ran
+    under model offload on a 6 GB card, spilled into shared memory and sampled at
+    137 s per step instead of 23, until Windows ran out of virtual memory.
+
+    So the dtype is passed, as ``torch_dtype``, which every diffusers that
+    ``requirements.txt`` allows understands, and checked afterwards. A diffusers
+    that ignores it has its cast undone, and the call raises rather than
+    rendering for hours. AutoPipeline's img2img and inpainting build their class
+    directly and never cast. ``test_deriving_a_pipeline_keeps_its_precision``
+    covers all four paths.
+    """
+    dtype = source.unet.dtype
+    derived = factory.from_pipe(source, torch_dtype=dtype, **components)
+    if derived.unet.dtype != dtype:
+        source.to(dtype=dtype)  # shared weights: put the resident pipeline back before raising
+        raise RuntimeError(
+            f"{factory.__name__}.from_pipe converted the loaded weights from {dtype} to "
+            f"{derived.unet.dtype}, so this diffusers ignores torch_dtype there. Fix _from_pipe "
+            "in claudali/engine/pipelines.py: an fp32 SDXL does not fit a small card."
+        )
     return derived
 
 

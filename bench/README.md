@@ -93,6 +93,12 @@ was written. Every session starts by reading the bundles on disk and believing
 them over the state file, because bundles are written *during* an item and the
 state file only between them.
 
+A worker that crashes no longer sits behind a Windows error dialog until
+someone clicks it away, which once held a run for six hours. It exits at once,
+its Python stack goes to its log in `bench/logs`, the runner marks the item
+failed with the exit code (`0xC0000005` is an access violation), and the run
+carries on. A failed item is tried again at the start of every later run.
+
 Resuming is always the same command:
 
 ```powershell
@@ -159,17 +165,19 @@ items, give an idea of what the features phase is for:
 | Item | Time | s/step | Peak VRAM | Free RAM |
 |---|---:|---:|---:|---|
 | plain txt2img | 132 s | 13.8 | 5.88 GB | 9.7 → 1.7 GB |
-| the same with a depth ControlNet | >25 min | ~49 | 12.35 GB | 8.5 → 0.0 GB |
+| the same with a depth ControlNet, before the fp32 fix | >25 min | ~49 | 12.35 GB | 8.5 → 0.0 GB |
 
-**ControlNet on this card is pathologically slow.** A second network beside an
-already-offloaded 6 GB UNet pushes the allocation past the card, Windows absorbs
-the overflow into shared system memory, and the render crawls. 12.35 GB of
-"peak VRAM" on a 6 GB card is that spill, not a bad reading.
+**The second row measured a bug, not ControlNet.** Until 2026-10-24, building
+the ControlNet pipeline converted the whole of SDXL to fp32 (`CLAUDE.md`,
+"`from_pipe` also casts, in place"), so a 10 GB UNet ran on a 6 GB card, Windows
+absorbed the overflow into shared system memory, and the render crawled.
+12.35 GB of "peak VRAM" on a 6 GB card was that spill, not a bad reading. The
+hi-res pass had the same bug. Every ControlNet and hi-res item measured before
+the fix was deleted and re-queued, so what ControlNet really costs on this card
+is what those items measure next.
 
-So expect the three `control-*` items to dominate the features phase, and treat
-the full-quality ControlNet items at 1024² as genuinely open-ended — that is the
-question they exist to answer. If they are still going after an hour, Ctrl+C is
-the right response; the phase after them is not blocked by it.
+If the full-quality ControlNet items at 1024² are still going after an hour,
+Ctrl+C is the right response; the phase after them is not blocked by it.
 
 ### The survey's twelve waves
 

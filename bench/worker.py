@@ -45,6 +45,28 @@ def _use_utf8() -> None:
             pass
 
 
+def _crash_without_a_dialog() -> None:
+    """Let a native crash end this process, leaving its Python stack in the item's log.
+
+    On 2026-09-25 a worker died inside torch's c10.dll after Windows ran out of
+    virtual memory. Windows then showed "python.exe - Error de la aplicación"
+    and kept the dead process waiting for someone to click OK. Nobody did for
+    six hours, and the runner waited on it all that time. With the fault dialog
+    off the process ends at once, and the runner records the item as failed and
+    moves on. faulthandler first writes every thread's stack to stderr, which is
+    the item's log in bench/logs.
+    """
+    import faulthandler
+
+    faulthandler.enable(all_threads=True)
+    if sys.platform == "win32":
+        import ctypes
+
+        no_fault_dialog = 0x0002  # SEM_NOGPFAULTERRORBOX
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetErrorMode(kernel32.GetErrorMode() | no_fault_dialog)
+
+
 def emit(event: str, **payload: Any) -> None:
     """One JSON object per line on stdout. The runner's only input."""
     sys.stdout.write(json.dumps({"event": event, **payload}, ensure_ascii=False) + "\n")
@@ -200,6 +222,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("ids", nargs="+", help="item ids to render, in order")
     parser.add_argument("--force", action="store_true", help="resume across a changed fingerprint")
     _use_utf8()
+    _crash_without_a_dialog()
     args = parser.parse_args(argv)
 
     plan = {item.id: item for item in load_plan()}
