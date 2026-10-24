@@ -36,7 +36,7 @@ REPORT_DIR = BENCH_DIR / "report"
 CSV_COLUMNS = [
     "id", "phase", "wave", "group", "title", "model", "status",
     "images", "duration_s", "s_per_step", "decode",
-    "ram_free_start_gb", "ram_free_min_gb", "vram_peak_gb",
+    "ram_free_start_gb", "ram_free_min_gb", "vram_peak_gb", "power",
     "width", "height", "steps", "cfg", "sampler", "variations",
     "precision", "vae_decode", "quality", "refiner", "hires",
     "family", "subcase", "prompt_index", "variant", "intent",
@@ -83,6 +83,9 @@ def _row(item: Item, record: Record, bundle: dict[str, Any]) -> dict[str, Any]:
         "ram_free_start_gb": record.ram_free_start_gb or "",
         "ram_free_min_gb": record.ram_free_min_gb or "",
         "vram_peak_gb": record.vram_peak_gb or "",
+        # Whoever compares two rows' timings needs to know they were measured
+        # under the same power settings. See bench/power.py.
+        "power": record.power or "",
         "width": compiled.get("width") or width,
         "height": compiled.get("height") or height,
         "steps": compiled.get("steps") or render.get("steps") or "",

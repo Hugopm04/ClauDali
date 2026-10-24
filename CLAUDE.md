@@ -165,6 +165,8 @@ bench/            The benchmark. Its own README; see "Benchmarking" below.
   runner.py       Spawns workers, follows them, keeps the books.
   worker.py       Renders. The only module in bench/ that reaches torch.
   progress.py     The whole-run progress bar and its ETA.
+  power.py        Mains or battery, and the active power plan. The check
+                  `bench run` makes before it starts. Stdlib only.
   report.py       The HTML gallery and the CSV.
 ```
 
@@ -599,6 +601,7 @@ relations, colour binding, negation and text.
 ```powershell
 .\.venv\Scripts\python.exe -m bench plan --check   # build the list; validate every spec
 .\.venv\Scripts\python.exe -m bench run            # start, or carry on. Ctrl+C stops
+.\.venv\Scripts\python.exe -m bench run --yes      # ... without the power prompt
 .\.venv\Scripts\python.exe -m bench status
 .\.venv\Scripts\python.exe -m bench report
 ```
@@ -621,6 +624,18 @@ Three things about it are load-bearing and easy to break:
    decoder for one of them. Measured while building this: at 640x640 with
    8.45 GB free, `auto` chose the CPU, drove free RAM to 0.0 GB and took 686 s
    where the GPU tiled path took 100 s.
+4. **Power state is the other thing that silently breaks comparability.** This
+   laptop renders the same image more slowly on battery, and slower again in a
+   power-saving plan. `features/full/init-source` came out at 29.9 s/step
+   against 23.2 for every other 1024x1024 item in its phase, +29%, with 85% of
+   its window on battery per event 105 in the Windows system log; it was
+   deleted and re-queued on 2026-09-21. `bench run` now shows the power state
+   and asks before it starts (`--yes` skips), every item records the state it
+   began under in `state.json` and the CSV, and a change mid-run is logged.
+   The power plan is judged by **whether it changed, never by its name**: the
+   schemes here are a mix of localised Windows ones and English ones Armoury
+   Crate created, so any table of "bad" names would be wrong in the next
+   language. Do not add one.
 
 `bench plan --check` compiles all 1,816 specs before writing the list. Run it
 after editing `bench/topics/*.yaml`: an unknown vocabulary key does not fail, it

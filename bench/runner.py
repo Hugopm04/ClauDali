@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from . import power
 from .model import BENCH_DIR, ROOT, Calibration, Item, Record, State
 from .progress import ProgressBar, RunProgress, human_duration
 
@@ -192,6 +193,7 @@ class Runner:
         self.force = force
         self.dry_run = dry_run
         self.interrupted = False
+        self._power: Optional[str] = None
 
     # -- one worker ---------------------------------------------------------
 
@@ -256,6 +258,10 @@ class Runner:
             record.attempts += 1
             record.started_at = _now()
             record.bundle_dir = str(item.bundle_dir)
+            # Measured per item, not once per run: a charger pulled out at
+            # three in the morning is exactly the case this exists to catch,
+            # and it costs one ctypes call against a thirteen-minute render.
+            record.power = power.measure().tag
             self.state.save()
             width, height = item.size()
             progress.item_id = item.id
@@ -366,6 +372,21 @@ class Runner:
 
     # -- the loop -----------------------------------------------------------
 
+    def _check_power(self) -> None:
+        """Say so, once, when the power state changes under a running benchmark.
+
+        The confirmation at the start covers the machine as it was then. A run
+        goes on for days, and a charger comes out somewhere in the middle of
+        one; every item after that is measured under different conditions. It
+        is logged rather than acted on -- stopping the run would cost more than
+        the items it saves, and the per-item ``power`` tag records which ones
+        to distrust either way.
+        """
+        now = power.measure().tag
+        if self._power is not None and now != self._power:
+            self.bar.log(f"  !! power state changed: {self._power} -> {now}")
+        self._power = now
+
     def run(self, plan: Plan, limit: Optional[int] = None) -> RunProgress:
         outstanding = plan.outstanding[:limit] if limit else plan.outstanding
         progress = RunProgress(
@@ -384,6 +405,7 @@ class Runner:
         for batch in group(outstanding):
             if self.interrupted:
                 break
+            self._check_power()
             if self.dry_run:
                 for item in batch:
                     self.bar.log(

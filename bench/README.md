@@ -26,6 +26,25 @@ cd "C:\Users\Hugo\Desktop\Mis proyectos\Juegos y gráficos\ClauDali"
 .\.venv\Scripts\python.exe -m bench run            # start, or carry on
 ```
 
+`run` asks one question before it loads anything:
+
+```
+Before a run that may take days:
+  [ ] plugged in to mains
+  [ ] performance profile on (Turbo / High performance)
+  [ ] nothing else heavy running -- a browser costs RAM the decode needs
+
+This machine, right now:
+  power source     mains, battery at 87%
+  power plan       High performance
+
+Press Enter to start, or n to stop:
+```
+
+Enter starts it. It is not a formality: **this laptop renders measurably
+slower on battery**, and a run measured that way cannot be compared with one
+measured on mains. See "Power" below.
+
 That is the whole loop. **To stop: press Ctrl+C once.** To carry on: run
 `... -m bench run` again. It picks up exactly where it left off, including
 mid-image.
@@ -53,6 +72,7 @@ $py = "$PWD\.venv\Scripts\python.exe"
 & $py -m bench run --wave w01             # only that survey wave
 & $py -m bench run --dry-run              # list what would run, render nothing
 & $py -m bench run --force                # resume across a library or model upgrade
+& $py -m bench run --yes                  # skip the power prompt, still report the state
 ```
 
 ---
@@ -187,8 +207,48 @@ Beyond the images, every bundle's `result.json` now records:
 - `sessions` — one entry per render call, so a paused-and-resumed item's
   numbers stay separable.
 
+And `state.json` records, per item, the `power` state it started under —
+`ac/High performance`, `battery/Power saver` — which is the subject of the next
+section.
+
 `bench report` flattens all of it into `bench/report/measurements.csv`, one row
 per item.
+
+---
+
+## Power
+
+A laptop on battery, or in a power-saving profile, renders the **same image**
+more slowly. Nothing fails, nothing warns, and only the numbers are wrong —
+which in the settings phase is the entire product.
+
+This is not hypothetical. `features/full/init-source` ran at 29.9 s/step
+against 23.2 s/step for every other 1024×1024 item in the phase, +29%, and the
+Windows event log put 85% of its window on battery. It was found by
+correlating `state.json` timestamps against event 105 in the system log, weeks
+later. That item was deleted and re-queued; the other 64 all sit within ±2% of
+their same-size peers, and the run as a whole matches the 23–26 s/step that
+`CLAUDE.md` recorded for this machine before the benchmark existed, so nothing
+else needed discarding.
+
+Three things now make that self-diagnosing, all in `bench/power.py`:
+
+- **`run` asks before it starts**, showing the mains/battery state and the
+  active power plan. `--yes` skips the question; with no terminal — a
+  scheduled run, output piped to a file — it reports and carries on rather
+  than blocking on a pipe.
+- **Every item records the power state it began under**, so the question is
+  answerable from `state.json` and the CSV instead of from the event log.
+- **A change mid-run is logged** (`!! power state changed: ac/High performance
+  -> battery/High performance`). It is not acted on: stopping a multi-week run
+  costs more than the items it would save, and the per-item tag already says
+  which ones to distrust.
+
+The power plan is judged only by **whether it changed**, never by its name. The
+schemes on this machine are a mix of localised Windows ones (`Equilibrado`) and
+English ones Armoury Crate created, so a table of "bad" names would be wrong in
+the next language or under the next OEM utility. Comparability is the property
+a benchmark actually needs, and it needs no table.
 
 ---
 
@@ -258,6 +318,7 @@ bench/
   runner.py         spawns workers, follows them, keeps the books
   worker.py         renders; the only module here that reaches torch
   progress.py       the whole-run bar and its ETA
+  power.py          mains/battery and the power plan, and the check before a run
   report.py         the HTML gallery and the CSV
   __main__.py       plan / run / status / report / estimate
 

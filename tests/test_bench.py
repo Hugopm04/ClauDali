@@ -15,6 +15,7 @@ that no amount of compiling would notice.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from bench import catalog, report, runner  # noqa: E402
+from bench import catalog, power, report, runner  # noqa: E402
 from bench.model import Calibration, Item, Record, State  # noqa: E402
 from bench.progress import ProgressBar, RunProgress, human_duration  # noqa: E402
 
@@ -606,3 +607,117 @@ def test_a_finished_item_advances_the_whole_run_bar(monkeypatch, tmp_path):
     # The item's measurements reached the cost model.
     assert run.calibration.step_seconds(512, 512, "fp16") == 9.5
     assert run.calibration.load_seconds() == 42.0
+
+
+# ---------------------------------------------------------------------------
+# The power check
+# ---------------------------------------------------------------------------
+
+
+def test_an_unreadable_power_state_stops_nothing(monkeypatch):
+    """A four-week run must never fail to start because of this check."""
+    monkeypatch.setattr(power, "_windows_state", lambda: 1 / 0)
+    monkeypatch.setattr(power, "_posix_state", lambda: 1 / 0)
+
+    state = power.measure()
+
+    assert state == power.PowerState()
+    assert state.tag == power.UNKNOWN
+    assert state.complaints() == ["The power source could not be read, so nothing here checked it."]
+
+
+def test_an_unknown_ac_line_status_is_not_reported_as_battery():
+    """255 means the machine does not know, which is not the same as unplugged."""
+    assert power.PowerState(on_ac=None, scheme_name="High performance").complaints() == [
+        "The power source could not be read, so nothing here checked it."
+    ]
+    assert "BATTERY" not in power.PowerState(on_ac=None, scheme_name="x").describe()
+
+
+def test_running_on_battery_is_complained_about():
+    complaints = power.PowerState(on_ac=False, battery_percent=80, scheme_name="High performance").complaints()
+    assert len(complaints) == 1 and "BATTERY" in complaints[0]
+
+
+def test_a_changed_power_plan_is_complained_about_even_when_it_is_the_faster_one():
+    """Comparability is what a benchmark loses, in either direction."""
+    faster = power.PowerState(on_ac=True, scheme_name="High performance")
+    complaints = faster.complaints(baseline="Power saver")
+    assert len(complaints) == 1 and "not be comparable" in complaints[0]
+    assert faster.complaints(baseline="High performance") == []
+
+
+def test_the_power_tag_ignores_the_battery_percentage():
+    """It changes every minute; a tag that moved with it could never be grouped."""
+    at_full = power.PowerState(on_ac=True, battery_percent=100, scheme_name="High performance")
+    at_half = power.PowerState(on_ac=True, battery_percent=50, scheme_name="High performance")
+    assert at_full.tag == at_half.tag == "ac/High performance"
+    assert at_full.scheme == "High performance"
+
+
+def test_the_baseline_is_what_the_finished_items_agree_on():
+    assert power.history(["ac/High performance"] * 3) == "High performance"
+    # Once they disagree the comparison is already lost; there is no baseline
+    # left to hold the next item to, and saying so every run would be noise.
+    assert power.history(["ac/High performance", "battery/Power saver"]) is None
+    assert power.history([None, "unknown", ""]) is None
+
+
+def test_confirm_reports_the_state_and_takes_enter_for_yes():
+    state = power.PowerState(on_ac=True, battery_percent=91, scheme_name="High performance")
+    out = io.StringIO()
+
+    assert power.confirm(state, assume_yes=True, stream=out) is True
+
+    printed = out.getvalue()
+    assert "mains" in printed and "High performance" in printed
+    assert "!!" not in printed
+
+
+def test_confirm_never_blocks_when_there_is_no_terminal(monkeypatch):
+    """A scheduled run has nobody to ask and must not hang on a pipe."""
+    out = io.StringIO()
+    monkeypatch.setattr(
+        power, "input", lambda *a: pytest.fail("asked a question with no terminal"), raising=False
+    )
+
+    assert power.confirm(power.PowerState(on_ac=False), interactive=False, stream=out) is True
+    assert "BATTERY" in out.getvalue()
+
+
+def test_confirm_stops_on_n(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    assert power.confirm(power.PowerState(on_ac=True), interactive=True, stream=io.StringIO()) is False
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    assert power.confirm(power.PowerState(on_ac=True), interactive=True, stream=io.StringIO()) is True
+
+
+def test_each_item_records_the_power_state_it_started_under(monkeypatch, tmp_path):
+    """Recorded per item so the question is answerable from state.json alone.
+
+    It was not, and answering it for the first 65 items meant correlating
+    their timestamps against event 105 in the Windows system log.
+    """
+    monkeypatch.setattr(
+        power, "measure", lambda: power.PowerState(on_ac=False, scheme_name="Power saver")
+    )
+    item = _item("settings/a")
+    process = _FakeProcess(_events(
+        item.id,
+        {"event": "done", "item": item.id, "images": 1, "duration_s": 40.0},
+    ))
+    run, state, plan = _runner_over(monkeypatch, tmp_path, process, [item])
+
+    run.run(plan)
+
+    assert state.records[item.id].power == "battery/Power saver"
+
+
+def test_a_record_written_before_the_power_field_existed_still_loads(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"settings/a": {"id": "settings/a", "status": "done"}}), encoding="utf-8")
+
+    record = State.load(path).records["settings/a"]
+
+    assert record.power is None
+    assert power.history([record.power]) is None

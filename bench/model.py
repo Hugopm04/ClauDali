@@ -328,6 +328,12 @@ class Record:
     ram_free_start_gb: Optional[float] = None
     ram_free_min_gb: Optional[float] = None
     vram_peak_gb: Optional[float] = None
+    # The power state the item started under, e.g. "ac/High performance". A
+    # laptop on battery renders the same image measurably slower, which makes
+    # its timings incomparable with everything else; recorded per item so the
+    # question can be answered from this file instead of from the event log.
+    # See bench/power.py. ``None`` on every item run before this was added.
+    power: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

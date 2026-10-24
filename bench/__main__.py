@@ -84,6 +84,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    from . import power
     from .progress import ProgressBar
     from .runner import Runner, prepare
 
@@ -99,6 +100,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not plan.outstanding:
         print("nothing outstanding: every item in this selection is finished.")
         return 0
+
+    # Asked before anything loads, because the answer decides what the next
+    # days of measurements are worth, and because by the time a 7 GB checkpoint
+    # is resident nobody wants to stop and start again.
+    if not args.dry_run:
+        baseline = power.history(record.power for record in state.records.values())
+        if not power.confirm(baseline=baseline, assume_yes=args.yes):
+            print("Not started.")
+            return 1
 
     runner = Runner(state, calibration, ProgressBar(), force=args.force, dry_run=args.dry_run)
     progress = runner.run(plan, limit=args.limit)
@@ -141,6 +151,23 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"  {status:9s} {counts[status]}")
     print(f"\n  GPU time spent     {human_duration(spent)}")
     print(f"  estimated left     {human_duration(sum(calibration.estimate(i) for i in remaining))}")
+
+    from . import power
+
+    print(f"  power now          {power.measure().tag}")
+    ran_under: dict[str, int] = {}
+    for record in state.records.values():
+        if record.power:
+            ran_under[record.power] = ran_under.get(record.power, 0) + 1
+    if len(ran_under) > 1:
+        # Worth a line of its own: timings measured under different power
+        # settings are not comparable, and that is invisible in the s/step.
+        print("  ran under          " + ", ".join(
+            f"{tag} ({count})" for tag, count in sorted(ran_under.items(), key=lambda kv: -kv[1])
+        ))
+    elif ran_under:
+        tag, count = next(iter(ran_under.items()))
+        print(f"  ran under          {tag} ({count} items)")
 
     measured = {key: len(values) for key, values in calibration.per_size.items() if values}
     if measured:
@@ -226,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--force", action="store_true",
                      help="resume items whose fingerprint changed (a library or model upgrade)")
     run.add_argument("--dry-run", action="store_true", help="list what would run, render nothing")
+    run.add_argument("--yes", "-y", action="store_true",
+                     help="skip the power check's confirmation (it still reports the state)")
     run.set_defaults(func=cmd_run)
 
     status = sub.add_parser("status", help="where the run stands")
